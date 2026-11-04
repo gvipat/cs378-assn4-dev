@@ -38,8 +38,10 @@ class KVBlock:
         self.ref = 0
         self.hash: int | None = None
         self.tokens: tuple | None = None
-        self.gen = 0                          # bumped each time the block gets a new identity
-        self.parent: tuple | None = None      # (id, gen) of the block before it (verify mode)
+        self.gen = 0  # bumped each time the block gets a new identity
+        self.parent: tuple | None = (
+            None  # (id, gen) of the block before it (verify mode)
+        )
 
 
 # emit(kind, block_hash, seq, **fields) with kind in hit / alloc / release / evict
@@ -50,8 +52,15 @@ Choose = Callable[[dict], int]
 
 class KVCacheManager:
 
-    def __init__(self, num_blocks: int, block_size: int, *, choose_victim: Choose,
-                 emit: Emit | None = None, verify: bool = False):
+    def __init__(
+        self,
+        num_blocks: int,
+        block_size: int,
+        *,
+        choose_victim: Choose,
+        emit: Emit | None = None,
+        verify: bool = False,
+    ):
         self.num_blocks = num_blocks
         self.block_size = block_size
         self.blocks = [KVBlock(i) for i in range(num_blocks)]
@@ -161,7 +170,9 @@ class KVCacheManager:
             if blk.hash is not None:
                 continue
             if h in self.prefix_map:
-                self.duplicate_blocks += 1   # same contents already resident; stay anonymous
+                self.duplicate_blocks += (
+                    1  # same contents already resident; stay anonymous
+                )
                 continue
             blk.hash = h
             blk.gen += 1
@@ -177,7 +188,9 @@ class KVCacheManager:
             bid = self.empty.popleft()
         else:
             if not self.cached:
-                raise EngineError("no block available; the scheduler should have checked")
+                raise EngineError(
+                    "no block available; the scheduler should have checked"
+                )
             bid = self.choose_victim(self.cached)
             if bid not in self.cached:
                 raise EngineError(f"victim {bid} is not a zero-reference cached block")

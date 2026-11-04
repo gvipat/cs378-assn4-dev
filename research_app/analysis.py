@@ -16,23 +16,25 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BLOCK_TOKENS = 256                 # block_hashes cover full 256-token blocks
-KV_BYTES_PER_TOKEN = 128 * 1024    # Llama-3-8B, bf16: 32 layers x 8 KV heads x 128 dims x 2 (K, V) x 2 bytes
+BLOCK_TOKENS = 256  # block_hashes cover full 256-token blocks
+KV_BYTES_PER_TOKEN = (
+    128 * 1024
+)  # Llama-3-8B, bf16: 32 layers x 8 KV heads x 128 dims x 2 (K, V) x 2 bytes
 
 
 @dataclass
 class Op:
     op_id: str
     report: str
-    kind: str                       # llm | search | fetch | validate
+    kind: str  # llm | search | fetch | validate
     stage: str
     deps: list[str]
-    start: float                    # the operation was issued (its dependencies had finished)
+    start: float  # the operation was issued (its dependencies had finished)
     end: float
-    status: str                     # ok | failed | cancelled
+    status: str  # ok | failed | cancelled
     attempts: int = 1
-    slot_requested: float | None = None   # LLM calls: asked for a slot under the cap
-    slot_acquired: float | None = None    # LLM calls: got the slot; service starts here
+    slot_requested: float | None = None  # LLM calls: asked for a slot under the cap
+    slot_acquired: float | None = None  # LLM calls: got the slot; service starts here
     prompt_tokens: int = 0
     output_tokens: int = 0
     block_hashes: list[str] = field(default_factory=list)
@@ -48,16 +50,21 @@ class Op:
 class Run:
     cap: int
     backend: str
-    arrivals: dict[str, float]      # report id -> start time of the report
+    arrivals: dict[str, float]  # report id -> start time of the report
     ops: dict[str, Op]
 
     def report_ops(self, report: str) -> list[Op]:
-        return sorted((o for o in self.ops.values() if o.report == report), key=lambda o: (o.start, o.op_id))
+        return sorted(
+            (o for o in self.ops.values() if o.report == report),
+            key=lambda o: (o.start, o.op_id),
+        )
 
     def llm_calls(self) -> list[Op]:
         """Completed LLM calls of every report, in start order."""
-        return sorted((o for o in self.ops.values() if o.kind == "llm" and o.status == "ok"),
-                      key=lambda o: (o.start, o.op_id))
+        return sorted(
+            (o for o in self.ops.values() if o.kind == "llm" and o.status == "ok"),
+            key=lambda o: (o.start, o.op_id),
+        )
 
 
 def load_run(path) -> Run:
@@ -78,9 +85,21 @@ def load_run(path) -> Run:
         elif kind == "op_end":
             s = started[ev["op_id"]]
             ops[ev["op_id"]] = Op(
-                ev["op_id"], s["report_id"], s["kind"], s["stage"], list(s["deps"]), s["t"], ev["t"], ev["status"],
-                ev.get("attempts", 1), ev.get("slot_requested"), ev.get("slot_acquired"),
-                ev.get("prompt_tokens", 0), ev.get("output_tokens", 0), list(ev.get("block_hashes") or []))
+                ev["op_id"],
+                s["report_id"],
+                s["kind"],
+                s["stage"],
+                list(s["deps"]),
+                s["t"],
+                ev["t"],
+                ev["status"],
+                ev.get("attempts", 1),
+                ev.get("slot_requested"),
+                ev.get("slot_acquired"),
+                ev.get("prompt_tokens", 0),
+                ev.get("output_tokens", 0),
+                list(ev.get("block_hashes") or []),
+            )
     return Run(cap, backend, arrivals, ops)
 
 
@@ -88,12 +107,13 @@ def load_run(path) -> Run:
 class Step:
     """One operation on a critical path. gap + wait + service spans from the
     previous step's end (or the report's start) to this operation's end."""
+
     op_id: str
     kind: str
     stage: str
-    gap: float        # from the blocking dependency's end (or the report start) to this operation's start
-    wait: float       # waiting for an LLM slot under the cap (0 for tools)
-    service: float    # running, including retries and their backoff
+    gap: float  # from the blocking dependency's end (or the report start) to this operation's start
+    wait: float  # waiting for an LLM slot under the cap (0 for tools)
+    service: float  # running, including retries and their backoff
 
 
 def critical_path(run: Run, report: str) -> list[Step]:
@@ -125,9 +145,9 @@ def prefix_hit_rate(calls: list[Op], block_size: int = BLOCK_TOKENS) -> float:
 @dataclass
 class Reuse:
     block: str
-    stage: str          # stage of the call that reused the block
-    source: str         # stage of the earlier call that held it most recently
-    interval: float     # seconds the block sat unused before this reuse (0 if a call still held it)
+    stage: str  # stage of the call that reused the block
+    source: str  # stage of the earlier call that held it most recently
+    interval: float  # seconds the block sat unused before this reuse (0 if a call still held it)
 
 
 def reuse_intervals(calls: list[Op]) -> list[Reuse]:
@@ -145,13 +165,16 @@ def reuse_intervals(calls: list[Op]) -> list[Reuse]:
 @dataclass
 class Footprint:
     t: float
-    calls: int          # LLM calls holding a slot
-    private: float      # bytes if every call stores its own prompt and output
-    shared: float       # bytes if calls on one GPU share identical full prefix blocks
+    calls: int  # LLM calls holding a slot
+    private: float  # bytes if every call stores its own prompt and output
+    shared: float  # bytes if calls on one GPU share identical full prefix blocks
 
 
-def kv_footprint(calls: list[Op], bytes_per_token: float = KV_BYTES_PER_TOKEN,
-                 block_size: int = BLOCK_TOKENS) -> list[Footprint]:
+def kv_footprint(
+    calls: list[Op],
+    bytes_per_token: float = KV_BYTES_PER_TOKEN,
+    block_size: int = BLOCK_TOKENS,
+) -> list[Footprint]:
     """KV-cache bytes held by the LLM calls that hold a slot, at every time that changes."""
     # [Part 1] TODO: A call holds KV memory from slot_acquired to end, for its
     # prompt_tokens + output_tokens. Evaluate the footprint at each distinct

@@ -76,9 +76,16 @@ def test_partial_branch_failure_is_kept_and_ordered():
     q = [q for q in load_questions(public=True) if len(q["subtopics"]) == 3][:1]
     _, (rec,) = run(q, faults=faults)
     statuses = [(b["subtopic_id"], b["followup"], b["status"]) for b in rec.branches]
-    assert statuses[:3] == [("f1", False, BranchStatus.PARTIAL.value), ("f2", False, BranchStatus.FAILED.value),
-                            ("f3", False, BranchStatus.SUCCESS.value)]
-    assert statuses[3] == ("f2", True, BranchStatus.SUCCESS.value)    # the follow-up covers f2
+    assert statuses[:3] == [
+        ("f1", False, BranchStatus.PARTIAL.value),
+        ("f2", False, BranchStatus.FAILED.value),
+        ("f3", False, BranchStatus.SUCCESS.value),
+    ]
+    assert statuses[3] == (
+        "f2",
+        True,
+        BranchStatus.SUCCESS.value,
+    )  # the follow-up covers f2
     assert rec.op("R00/f1/fetch2").status == "failed"
     assert rec.valid
     # same faults, same recording
@@ -88,19 +95,27 @@ def test_partial_branch_failure_is_kept_and_ordered():
 
 
 def test_transient_tool_failures_retry_up_to_three_attempts():
-    _, recs = run(load_questions(public=True)[:6], latency=ToolLatency(seed=1, failure_rate=0.4))
+    _, recs = run(
+        load_questions(public=True)[:6], latency=ToolLatency(seed=1, failure_rate=0.4)
+    )
     tool_ops = [o for r in recs for o in r.ops if o.kind in ("search", "fetch")]
     assert any(o.retries for o in tool_ops)
     assert all(len(o.attempts) <= 3 for o in tool_ops)
     for o in tool_ops:
         if o.status == "failed":
-            assert len(o.attempts) == 3 and all(a.status == "transient" for a in o.attempts)
+            assert len(o.attempts) == 3 and all(
+                a.status == "transient" for a in o.attempts
+            )
 
 
 def test_branch_timeout_keeps_completed_work():
     q = load_questions(public=True)[:1]
-    _, (rec,) = run(q, live=True, latency=ToolLatency(seed=0, scale=1.0),
-                    settings=AgentSettings(branch_timeout=0.05))
+    _, (rec,) = run(
+        q,
+        live=True,
+        latency=ToolLatency(seed=0, scale=1.0),
+        settings=AgentSettings(branch_timeout=0.05),
+    )
     assert {b["status"] for b in rec.branches} == {BranchStatus.TIMEOUT.value}
     assert any(o.status == "cancelled" for o in rec.ops)
     assert rec.valid is False and rec.report is not None

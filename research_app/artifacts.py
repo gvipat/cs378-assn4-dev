@@ -1,9 +1,9 @@
 """Data classes for the research plan, collected evidence, and final report.
 
-    Evidence      a verbatim span of one document snapshot, found by code
-    Claim         one sentence of the report and the evidence ids it cites
-    Report        the question, its claims, and the evidence they cite
-    BranchResult  what one subtopic's research branch produced, success or not
+Evidence      a verbatim span of one document snapshot, found by code
+Claim         one sentence of the report and the evidence ids it cites
+Report        the question, its claims, and the evidence they cite
+BranchResult  what one subtopic's research branch produced, success or not
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from enum import Enum
 class Subtopic:
     """A planned research subtopic, with a title and search query."""
 
-    subtopic_id: str          # "f1", "f2", ...
+    subtopic_id: str  # "f1", "f2", ...
     title: str
     query: str
 
@@ -26,10 +26,10 @@ class Subtopic:
 class Evidence:
     """A quoted passage with its document version, text offsets, and source call."""
 
-    evidence_id: str       # "E1", "E2", ... assigned after all branches finish
+    evidence_id: str  # "E1", "E2", ... assigned after all branches finish
     doc_id: str
-    snapshot: str          # SHA-256 of the snapshot text the span was taken from
-    start: int             # text[start:end] == quote
+    snapshot: str  # SHA-256 of the snapshot text the span was taken from
+    start: int  # text[start:end] == quote
     end: int
     quote: str
     subtopic_id: str
@@ -61,14 +61,19 @@ class Report:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Report":
-        return cls(d["report_id"], d["question_id"], d["question"], d.get("title", ""),
-                   [Claim(c["text"], list(c["evidence_ids"])) for c in d.get("claims", [])],
-                   [Evidence(**e) for e in d.get("evidence", [])])
+        return cls(
+            d["report_id"],
+            d["question_id"],
+            d["question"],
+            d.get("title", ""),
+            [Claim(c["text"], list(c["evidence_ids"])) for c in d.get("claims", [])],
+            [Evidence(**e) for e in d.get("evidence", [])],
+        )
 
 
 class BranchStatus(str, Enum):
     SUCCESS = "success"
-    PARTIAL = "partial"              # some fetches failed, but extraction succeeded
+    PARTIAL = "partial"  # some fetches failed, but extraction succeeded
     TIMEOUT = "timeout"
     FAILED = "permanent_failure"
 
@@ -78,11 +83,13 @@ class BranchResult:
     """The work completed for a subtopic, including any failures or timeout."""
 
     subtopic: Subtopic
-    index: int                       # subtopic position in the plan; follow-ups use 100 + index
+    index: int  # subtopic position in the plan; follow-ups use 100 + index
     status: BranchStatus = BranchStatus.SUCCESS
-    evidence: list[Evidence] = field(default_factory=list)   # evidence_id still ""
-    docs: list[str] = field(default_factory=list)            # doc ids fetched successfully
-    ops: list[str] = field(default_factory=list)             # ids of operations started by this branch
+    evidence: list[Evidence] = field(default_factory=list)  # evidence_id still ""
+    docs: list[str] = field(default_factory=list)  # doc ids fetched successfully
+    ops: list[str] = field(
+        default_factory=list
+    )  # ids of operations started by this branch
     errors: list[str] = field(default_factory=list)
     followup: bool = False
 

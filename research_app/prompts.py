@@ -24,7 +24,7 @@ from .corpus import Doc
 
 @dataclass(frozen=True)
 class Msg:
-    role: str      # system | user | assistant
+    role: str  # system | user | assistant
     text: str
 
 
@@ -110,17 +110,29 @@ are not in the evidence list."""
 
 
 def document_message(doc: Doc) -> Msg:
-    return Msg("user", f'<document id="{doc.doc_id}" snapshot="{doc.sha256}" title="{escape(doc.title, quote=True)}">\n{doc.text}\n</document>')
+    return Msg(
+        "user",
+        f'<document id="{doc.doc_id}" snapshot="{doc.sha256}" title="{escape(doc.title, quote=True)}">\n{doc.text}\n</document>',
+    )
 
 
 def plan_messages(question: str) -> list[Msg]:
-    return [Msg("system", SYSTEM_PROMPT), Msg("user", PLAN_INSTRUCTIONS), Msg("user", f"Question: {question}")]
+    return [
+        Msg("system", SYSTEM_PROMPT),
+        Msg("user", PLAN_INSTRUCTIONS),
+        Msg("user", f"Question: {question}"),
+    ]
 
 
 def extract_messages(question: str, subtopic: Subtopic, docs: list[Doc]) -> list[Msg]:
     msgs = [Msg("system", SYSTEM_PROMPT), Msg("user", EXTRACT_INSTRUCTIONS)]
     msgs += [document_message(d) for d in sorted(docs, key=lambda d: d.doc_id)]
-    msgs.append(Msg("user", f"Subtopic: {subtopic.title}\nSearch query: {subtopic.query}\nQuestion: {question}"))
+    msgs.append(
+        Msg(
+            "user",
+            f"Subtopic: {subtopic.title}\nSearch query: {subtopic.query}\nQuestion: {question}",
+        )
+    )
     return msgs
 
 
@@ -128,22 +140,33 @@ def evidence_listing(subtopics: list[Subtopic], evidence: list[Evidence]) -> str
     titles = {f.subtopic_id: f.title for f in subtopics}
     lines = ["Evidence:"]
     for e in evidence:
-        lines.append(f'[{e.evidence_id}] ({e.doc_id}; subtopic {e.subtopic_id}: {titles.get(e.subtopic_id, "follow-up")}) "{e.quote}"')
+        lines.append(
+            f'[{e.evidence_id}] ({e.doc_id}; subtopic {e.subtopic_id}: {titles.get(e.subtopic_id, "follow-up")}) "{e.quote}"'
+        )
     if not evidence:
         lines.append("(none)")
     return "\n".join(lines)
 
 
-def synthesize_messages(question: str, subtopics: list[Subtopic], evidence: list[Evidence]) -> list[Msg]:
+def synthesize_messages(
+    question: str, subtopics: list[Subtopic], evidence: list[Evidence]
+) -> list[Msg]:
     plan = "\n".join(f"{f.subtopic_id}. {f.title}" for f in subtopics)
-    return [Msg("system", SYSTEM_PROMPT), Msg("user", SYNTHESIZE_INSTRUCTIONS),
-            Msg("user", f"Question: {question}\nPlan:\n{plan}"), Msg("user", evidence_listing(subtopics, evidence))]
+    return [
+        Msg("system", SYSTEM_PROMPT),
+        Msg("user", SYNTHESIZE_INSTRUCTIONS),
+        Msg("user", f"Question: {question}\nPlan:\n{plan}"),
+        Msg("user", evidence_listing(subtopics, evidence)),
+    ]
 
 
 def repair_messages(synth: list[Msg], draft: str, problems: list[str]) -> list[Msg]:
     """Append the draft and citation errors to the original synthesis conversation."""
     listing = "\n".join(f"- {p}" for p in problems)
-    return synth + [Msg("assistant", draft), Msg("user", f"{REPAIR_INSTRUCTIONS}\nProblems:\n{listing}")]
+    return synth + [
+        Msg("assistant", draft),
+        Msg("user", f"{REPAIR_INSTRUCTIONS}\nProblems:\n{listing}"),
+    ]
 
 
 def render(messages: list[Msg]) -> list[str]:
@@ -170,7 +193,7 @@ def parse_json(text: str) -> dict | None:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
-        text = text[text.find("{"):] if "{" in text else text
+        text = text[text.find("{") :] if "{" in text else text
     start = text.find("{")
     while start >= 0:
         depth, in_str, esc = 0, False, False
@@ -192,7 +215,7 @@ def parse_json(text: str) -> dict | None:
                 depth -= 1
                 if depth == 0:
                     try:
-                        obj = json.loads(text[start:i + 1])
+                        obj = json.loads(text[start : i + 1])
                         return obj if isinstance(obj, dict) else None
                     except json.JSONDecodeError:
                         break

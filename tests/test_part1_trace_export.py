@@ -10,7 +10,10 @@ from research_app.tracing import BLOCK_SIZE, to_trace_job
 
 def build(recs, path, num_blocks=192):
     b = T.TraceBuilder("t-part1", "P1", "test", num_blocks=num_blocks)
-    maps = [to_trace_job(r, b.job(2.0 * i, meta={"question": r.question_id})) for i, r in enumerate(recs)]
+    maps = [
+        to_trace_job(r, b.job(2.0 * i, meta={"question": r.question_id}))
+        for i, r in enumerate(recs)
+    ]
     d = b.save(path)
     return d, maps
 
@@ -32,8 +35,12 @@ def test_exported_jobs_load_and_match_the_recording(tmp_path):
                 assert [f"{h:032x}" for h in node.hashes[:full]] == op.block_hashes
             else:
                 node = nodes[ops_to_nodes[op.op_id]]
-                assert node.type == "tool" and abs(node.delay - round(op.delay, 6)) < 1e-6
-            assert [ops_to_nodes[x] for x in op.deps if x in ops_to_nodes] == list(node.deps)
+                assert (
+                    node.type == "tool" and abs(node.delay - round(op.delay, 6)) < 1e-6
+                )
+            assert [ops_to_nodes[x] for x in op.deps if x in ops_to_nodes] == list(
+                node.deps
+            )
 
 
 def test_extract_calls_share_the_system_prefix(tmp_path):
@@ -42,7 +49,9 @@ def test_extract_calls_share_the_system_prefix(tmp_path):
     tr = T.load(tmp_path / "r.json")
     extracts = [n for _, n in tr.llm_nodes() if n.stage == "extract"]
     first = {n.hashes[0] for n in extracts}
-    assert len(first) == 1        # system prompt + instructions fill at least one shared block
+    assert (
+        len(first) == 1
+    )  # system prompt + instructions fill at least one shared block
 
 
 def test_record_reports_is_deterministic(tmp_path):
@@ -75,8 +84,13 @@ def test_jsonl_trace_has_every_op(tmp_path):
     from research_app.llm import FakeLLM
 
     async def go():
-        return await run_reports(load_questions(public=True)[:3], llm=FakeLLM(), cap=ConcurrencyLimiter(2), live=False,
-                                 backend="fake")
+        return await run_reports(
+            load_questions(public=True)[:3],
+            llm=FakeLLM(),
+            cap=ConcurrencyLimiter(2),
+            live=False,
+            backend="fake",
+        )
 
     recorder, recs = asyncio.run(go())
     path = tmp_path / "trace.jsonl"
@@ -89,6 +103,8 @@ def test_jsonl_trace_has_every_op(tmp_path):
     assert starts == set(ends) == {o.op_id for r in recs for o in r.ops}
     for e in ends.values():
         if e.get("prompt"):
-            assert set(e["prompt"]) <= segs and e["output"] in segs and e["block_hashes"]
+            assert (
+                set(e["prompt"]) <= segs and e["output"] in segs and e["block_hashes"]
+            )
     assert sum(x["event"] == "report_end" for x in lines) == 3
     assert all(x["valid"] is not None for x in lines if x["event"] == "report_end")

@@ -14,19 +14,42 @@ hashes.
   "split": "public_dev",
   "description": "free text for humans",
   "tokenizer": "qwen3-0.6b@c1899de2",
-  "memory": {"num_blocks": 192, "block_size": 256},
-  "engine": {"max_num_seqs": 16, "max_num_batched_tokens": 8192},
-  "generation": {"generator": "tracegen.dfam", "seed": 0, "sources": ["data/corpus (English Wikipedia, CC BY-SA 4.0)"]},
+  "memory": { "num_blocks": 192, "block_size": 256 },
+  "engine": { "max_num_seqs": 16, "max_num_batched_tokens": 8192 },
+  "generation": {
+    "generator": "tracegen.dfam",
+    "seed": 0,
+    "sources": ["data/corpus (English Wikipedia, CC BY-SA 4.0)"]
+  },
   "segments": {
-    "s3f2a...": {"text": "<|im_start|>system\n...<|im_end|>\n", "n_tokens": 812}
+    "s3f2a...": {
+      "text": "<|im_start|>system\n...<|im_end|>\n",
+      "n_tokens": 812
+    }
   },
   "jobs": [
-    {"id": "J00", "arrival": 0.0, "meta": {},
-     "nodes": [
-       {"id": "n0", "type": "llm", "stage": "plan", "deps": [],
-        "prompt": ["s3f2a...", "s91c0..."], "output": "s77d1..."},
-       {"id": "n1", "type": "tool", "stage": "search", "deps": ["n0"], "delay": 0.62}
-     ]}
+    {
+      "id": "J00",
+      "arrival": 0.0,
+      "meta": {},
+      "nodes": [
+        {
+          "id": "n0",
+          "type": "llm",
+          "stage": "plan",
+          "deps": [],
+          "prompt": ["s3f2a...", "s91c0..."],
+          "output": "s77d1..."
+        },
+        {
+          "id": "n1",
+          "type": "tool",
+          "stage": "search",
+          "deps": ["n0"],
+          "delay": 0.62
+        }
+      ]
+    }
   ]
 }
 ```

@@ -6,7 +6,7 @@ from agentkv.score import parse_params
 
 
 def test_inline_params_of_any_length():
-    big = {"knob_" + str(i): i for i in range(60)}           # well over 255 characters
+    big = {"knob_" + str(i): i for i in range(60)}  # well over 255 characters
     assert parse_params(json.dumps(big)) == big
 
 

@@ -18,7 +18,9 @@ def evaluate(policy_path, *, split="public_dev", params=None, workers=None):
     """
     result = score(policy_path, split=split, params=params, workers=workers)
     feedback = result.to_json()
-    feedback["diagnostics"] = result.summary(details=True)   # per-trace cache, preemption, and CPU statistics
+    feedback["diagnostics"] = result.summary(
+        details=True
+    )  # per-trace cache, preemption, and CPU statistics
     feedback["objective"] = None
     if result.valid:
         # Choose the value your system should maximize. This example uses the

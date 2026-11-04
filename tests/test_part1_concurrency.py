@@ -64,7 +64,7 @@ def test_lowering_cap_drains_without_cancelling():
     assert all(not t.cancelled() for t in first)
     ends_a = max(t for kind, name, t in log if kind == "end" and name.startswith("a"))
     starts_b = [t for kind, name, t in log if kind == "start" and name.startswith("b")]
-    assert all(t >= ends_a for t in starts_b)          # waited for the drain
+    assert all(t >= ends_a for t in starts_b)  # waited for the drain
     # under the new cap of 1 the b calls never overlap
     events = [(kind, name) for kind, name, _ in log if name.startswith("b")]
     depth = 0

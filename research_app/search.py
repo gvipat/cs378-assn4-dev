@@ -16,7 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Protocol
 
-from .corpus import Corpus, Doc, SearchHit, Tools, PermanentToolError, TransientToolError
+from .corpus import (
+    Corpus,
+    Doc,
+    SearchHit,
+    Tools,
+    PermanentToolError,
+    TransientToolError,
+)
 
 
 class DocumentStore(Protocol):
@@ -37,9 +44,12 @@ class SearchBackend(Protocol):
     corpus: DocumentStore
 
     def duration(self, kind: str, op_id: str, attempt: int) -> float | None: ...
-    def search(self, query: str, *, op_id: str, attempt: int = 1,
-               k: int = 5) -> list[SearchHit] | Awaitable[list[SearchHit]]: ...
-    def fetch(self, doc_id: str, *, op_id: str, attempt: int = 1) -> Doc | Awaitable[Doc]: ...
+    def search(
+        self, query: str, *, op_id: str, attempt: int = 1, k: int = 5
+    ) -> list[SearchHit] | Awaitable[list[SearchHit]]: ...
+    def fetch(
+        self, doc_id: str, *, op_id: str, attempt: int = 1
+    ) -> Doc | Awaitable[Doc]: ...
 
 
 class LocalSearch(Tools):
@@ -72,12 +82,24 @@ class SourceArchive:
 
     def doc(self, doc_id: str, snapshot: str | None = None) -> Doc:
         versions = self._docs[doc_id]
-        return versions[snapshot] if snapshot is not None else next(reversed(versions.values()))
+        return (
+            versions[snapshot]
+            if snapshot is not None
+            else next(reversed(versions.values()))
+        )
 
     def save(self, path: str | Path) -> None:
-        docs = [asdict(doc) for versions in self._docs.values() for doc in versions.values()]
-        Path(path).write_text(json.dumps({"schema": "research-sources/1", "documents": docs},
-                                        indent=2, ensure_ascii=False) + "\n")
+        docs = [
+            asdict(doc) for versions in self._docs.values() for doc in versions.values()
+        ]
+        Path(path).write_text(
+            json.dumps(
+                {"schema": "research-sources/1", "documents": docs},
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "SourceArchive":
@@ -90,8 +112,14 @@ class SourceArchive:
 class _WebSearch:
     """Share HTTP handling and source snapshots across the web adapters."""
 
-    def __init__(self, api_key: str | None = None, *, max_chars: int = 24000,
-                 timeout: float = 30.0, client=None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        max_chars: int = 24000,
+        timeout: float = 30.0,
+        client=None,
+    ):
         self._api_key = api_key or os.environ.get(self.key_env, "")
         if not self._api_key:
             raise ValueError(f"set {self.key_env} before using {type(self).__name__}")
@@ -109,12 +137,19 @@ class _WebSearch:
     def _headers(self):
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def _post(self, endpoint: str, payload: dict, op_id: str, attempt: int) -> dict:
+    async def _post(
+        self, endpoint: str, payload: dict, op_id: str, attempt: int
+    ) -> dict:
         import httpx
 
         async def send(client):
-            return await client.post(f"{self.base_url}/{endpoint}", json=payload,
-                                     headers=self._headers(), timeout=self.timeout)
+            return await client.post(
+                f"{self.base_url}/{endpoint}",
+                json=payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+
         try:
             if self._client is None:
                 async with httpx.AsyncClient() as client:
@@ -122,22 +157,39 @@ class _WebSearch:
             else:
                 response = await send(self._client)
         except httpx.RequestError as error:
-            raise TransientToolError(f"{self.name} {endpoint}: {type(error).__name__}") from error
+            raise TransientToolError(
+                f"{self.name} {endpoint}: {type(error).__name__}"
+            ) from error
         code = response.status_code
         if code == 429 or code >= 500:
             raise TransientToolError(f"{self.name} {endpoint}: HTTP {code}")
         if not 200 <= code < 300:
-            raise PermanentToolError(f"{self.name} {endpoint}: HTTP {code}; check the API key and account")
+            raise PermanentToolError(
+                f"{self.name} {endpoint}: HTTP {code}; check the API key and account"
+            )
         try:
             data = response.json()
         except ValueError as error:
-            raise PermanentToolError(f"{self.name} {endpoint}: response was not JSON") from error
+            raise PermanentToolError(
+                f"{self.name} {endpoint}: response was not JSON"
+            ) from error
         if not isinstance(data, dict):
-            raise PermanentToolError(f"{self.name} {endpoint}: response was not an object")
-        self.receipts.append({"op_id": op_id, "attempt": attempt, "provider": self.name,
-                              "endpoint": endpoint,
-                              "request_id": data.get("requestId") or data.get("request_id") or data.get("id"),
-                              "cost_dollars": data.get("costDollars"), "usage": data.get("usage")})
+            raise PermanentToolError(
+                f"{self.name} {endpoint}: response was not an object"
+            )
+        self.receipts.append(
+            {
+                "op_id": op_id,
+                "attempt": attempt,
+                "provider": self.name,
+                "endpoint": endpoint,
+                "request_id": data.get("requestId")
+                or data.get("request_id")
+                or data.get("id"),
+                "cost_dollars": data.get("costDollars"),
+                "usage": data.get("usage"),
+            }
+        )
         return data
 
     def _results(self, data):
@@ -151,29 +203,52 @@ class _WebSearch:
             if not isinstance(result, dict):
                 continue
             url = result.get("url", "")
-            if not isinstance(url, str) or not url.startswith(("https://", "http://")) or url in seen:
+            if (
+                not isinstance(url, str)
+                or not url.startswith(("https://", "http://"))
+                or url in seen
+            ):
                 continue
             seen.add(url)
             doc_id = "web-" + hashlib.sha256(url.encode()).hexdigest()[:20]
-            hit = SearchHit(doc_id, str(result.get("title") or url), url, "",
-                            float(result.get("score") or 0), "")
+            hit = SearchHit(
+                doc_id,
+                str(result.get("title") or url),
+                url,
+                "",
+                float(result.get("score") or 0),
+                "",
+            )
             self._hits[doc_id] = hit
             hits.append(hit)
         return hits[:k]
 
     def _save_text(self, hit, text, title=None):
         if not isinstance(text, str) or not text.strip():
-            raise PermanentToolError(f"{self.name} fetch: no source text returned for {hit.uri}")
-        text = text[:self.max_chars]
+            raise PermanentToolError(
+                f"{self.name} fetch: no source text returned for {hit.uri}"
+            )
+        text = text[: self.max_chars]
         sha = hashlib.sha256(text.encode()).hexdigest()
-        doc = Doc(hit.doc_id, "web", str(title or hit.title), hit.uri,
-                  datetime.now(timezone.utc).isoformat(), sha, 0, hit.uri, text)
+        doc = Doc(
+            hit.doc_id,
+            "web",
+            str(title or hit.title),
+            hit.uri,
+            datetime.now(timezone.utc).isoformat(),
+            sha,
+            0,
+            hit.uri,
+            text,
+        )
         self.corpus.add(doc)
         return doc
 
     async def fetch(self, doc_id: str, *, op_id: str, attempt: int = 1) -> Doc:
         if doc_id not in self._hits:
-            raise PermanentToolError(f"{self.name} fetch: document was not returned by search")
+            raise PermanentToolError(
+                f"{self.name} fetch: document was not returned by search"
+            )
         async with self._locks.setdefault(doc_id, asyncio.Lock()):
             if self.corpus.has(doc_id):
                 return self.corpus.doc(doc_id)
@@ -192,17 +267,25 @@ class ExaSearch(_WebSearch):
     def _headers(self):
         return {"x-api-key": self._api_key}
 
-    async def search(self, query: str, *, op_id: str, attempt: int = 1, k: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, *, op_id: str, attempt: int = 1, k: int = 5
+    ) -> list[SearchHit]:
         if not 1 <= k <= 100:
             raise ValueError("Exa search k must be in 1..100")
-        data = await self._post("search", {"query": query, "numResults": k, "type": "auto"}, op_id, attempt)
+        data = await self._post(
+            "search", {"query": query, "numResults": k, "type": "auto"}, op_id, attempt
+        )
         return self._remember_hits(self._results(data), k)
 
     async def _fetch_source(self, hit, op_id, attempt):
-        data = await self._post("contents", {"urls": [hit.uri], "text": True}, op_id, attempt)
+        data = await self._post(
+            "contents", {"urls": [hit.uri], "text": True}, op_id, attempt
+        )
         results = self._results(data)
         # A single-URL request may return the page's canonical URL after a redirect.
-        result = results[0] if len(results) == 1 and isinstance(results[0], dict) else {}
+        result = (
+            results[0] if len(results) == 1 and isinstance(results[0], dict) else {}
+        )
         return self._save_text(hit, result.get("text"), result.get("title"))
 
 
@@ -211,18 +294,41 @@ class TavilySearch(_WebSearch):
 
     name, key_env, base_url = "tavily", "TAVILY_API_KEY", "https://api.tavily.com"
 
-    async def search(self, query: str, *, op_id: str, attempt: int = 1, k: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, *, op_id: str, attempt: int = 1, k: int = 5
+    ) -> list[SearchHit]:
         if not 1 <= k <= 20:
             raise ValueError("Tavily search k must be in 1..20")
-        data = await self._post("search", {"query": query, "max_results": k, "search_depth": "basic",
-                                          "include_answer": False, "include_usage": True}, op_id, attempt)
+        data = await self._post(
+            "search",
+            {
+                "query": query,
+                "max_results": k,
+                "search_depth": "basic",
+                "include_answer": False,
+                "include_usage": True,
+            },
+            op_id,
+            attempt,
+        )
         return self._remember_hits(self._results(data), k)
 
     async def _fetch_source(self, hit, op_id, attempt):
-        data = await self._post("extract", {"urls": [hit.uri], "format": "text",
-                                           "extract_depth": "basic", "include_usage": True}, op_id, attempt)
+        data = await self._post(
+            "extract",
+            {
+                "urls": [hit.uri],
+                "format": "text",
+                "extract_depth": "basic",
+                "include_usage": True,
+            },
+            op_id,
+            attempt,
+        )
         results = self._results(data)
-        result = results[0] if len(results) == 1 and isinstance(results[0], dict) else {}
+        result = (
+            results[0] if len(results) == 1 and isinstance(results[0], dict) else {}
+        )
         return self._save_text(hit, result.get("raw_content"))
 
 
@@ -233,25 +339,46 @@ class PerplexitySearch(_WebSearch):
     be shorter than the full page. It never uses a generated Sonar answer.
     """
 
-    name, key_env, base_url = "perplexity", "PERPLEXITY_API_KEY", "https://api.perplexity.ai"
+    name, key_env, base_url = (
+        "perplexity",
+        "PERPLEXITY_API_KEY",
+        "https://api.perplexity.ai",
+    )
 
-    async def search(self, query: str, *, op_id: str, attempt: int = 1, k: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, *, op_id: str, attempt: int = 1, k: int = 5
+    ) -> list[SearchHit]:
         if not 1 <= k <= 20:
             raise ValueError("Perplexity search k must be in 1..20")
-        data = await self._post("search", {"query": query, "max_results": k, "max_tokens_per_page": 4096,
-                                          "max_tokens": k * 4096}, op_id, attempt)
+        data = await self._post(
+            "search",
+            {
+                "query": query,
+                "max_results": k,
+                "max_tokens_per_page": 4096,
+                "max_tokens": k * 4096,
+            },
+            op_id,
+            attempt,
+        )
         results = self._results(data)
         hits = self._remember_hits(results, k)
         by_url = {r.get("url"): r for r in reversed(results) if isinstance(r, dict)}
         for hit in hits:
             text = by_url[hit.uri].get("snippet")
             # Keep the first source version across parallel searches in this run.
-            if not self.corpus.has(hit.doc_id) and isinstance(text, str) and text.strip():
+            if (
+                not self.corpus.has(hit.doc_id)
+                and isinstance(text, str)
+                and text.strip()
+            ):
                 self._save_text(hit, text)
         return hits
 
     async def _fetch_source(self, hit, op_id, attempt):
-        raise PermanentToolError(f"Perplexity search returned no source excerpt for {hit.uri}")
+        raise PermanentToolError(
+            f"Perplexity search returned no source excerpt for {hit.uri}"
+        )
 
 
 class OpenAISearch(_WebSearch):
@@ -269,24 +396,41 @@ class OpenAISearch(_WebSearch):
         super().__init__(api_key, **kwargs)
         self.model = model or os.environ.get("AGENTKV_SEARCH_MODEL", "")
         if not self.model:
-            raise ValueError("set AGENTKV_SEARCH_MODEL to an OpenAI model that supports web_search")
+            raise ValueError(
+                "set AGENTKV_SEARCH_MODEL to an OpenAI model that supports web_search"
+            )
 
-    async def search(self, query: str, *, op_id: str, attempt: int = 1, k: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, *, op_id: str, attempt: int = 1, k: int = 5
+    ) -> list[SearchHit]:
         if not 1 <= k <= 20:
             raise ValueError("OpenAI search k must be in 1..20")
-        data = await self._post("responses", {
-            "model": self.model, "store": False,
-            "instructions": "Search for sources for the user's query. Return a short list of source URLs.",
-            "input": query, "tools": [{"type": "web_search"}], "tool_choice": "required",
-            "max_tool_calls": 1, "max_output_tokens": 1000,
-            "include": ["web_search_call.action.sources"],
-        }, op_id, attempt)
+        data = await self._post(
+            "responses",
+            {
+                "model": self.model,
+                "store": False,
+                "instructions": "Search for sources for the user's query. Return a short list of source URLs.",
+                "input": query,
+                "tools": [{"type": "web_search"}],
+                "tool_choice": "required",
+                "max_tool_calls": 1,
+                "max_output_tokens": 1000,
+                "include": ["web_search_call.action.sources"],
+            },
+            op_id,
+            attempt,
+        )
         receipt = self.receipts[-1]
         receipt["model"] = self.model
         output = data.get("output")
         if not isinstance(output, list):
             raise PermanentToolError("OpenAI search: response has no output list")
-        calls = [item for item in output if isinstance(item, dict) and item.get("type") == "web_search_call"]
+        calls = [
+            item
+            for item in output
+            if isinstance(item, dict) and item.get("type") == "web_search_call"
+        ]
         receipt["web_search_calls"] = len(calls)
         results = []
         for call in calls:
@@ -295,10 +439,16 @@ class OpenAISearch(_WebSearch):
         for item in output:
             if isinstance(item, dict) and item.get("type") == "message":
                 for part in item.get("content", []):
-                    results.extend(a for a in part.get("annotations", []) if a.get("type") == "url_citation")
+                    results.extend(
+                        a
+                        for a in part.get("annotations", [])
+                        if a.get("type") == "url_citation"
+                    )
         hits = self._remember_hits(results, k)
         if not calls or not hits:
-            raise PermanentToolError("OpenAI search: no web sources returned; check the model and token limit")
+            raise PermanentToolError(
+                "OpenAI search: no web sources returned; check the model and token limit"
+            )
         return hits
 
     async def _fetch_source(self, hit, op_id, attempt):
@@ -310,10 +460,17 @@ class OpenAISearch(_WebSearch):
 
 def make_search(provider: str, **kwargs) -> SearchBackend:
     """Select local, exa, tavily, perplexity, or openai retrieval for ResearchAgent."""
-    providers = {"local": LocalSearch, "exa": ExaSearch, "tavily": TavilySearch,
-                 "perplexity": PerplexitySearch, "openai": OpenAISearch}
+    providers = {
+        "local": LocalSearch,
+        "exa": ExaSearch,
+        "tavily": TavilySearch,
+        "perplexity": PerplexitySearch,
+        "openai": OpenAISearch,
+    }
     try:
         cls = providers[provider.lower()]
     except KeyError:
-        raise ValueError(f"unknown search provider {provider!r}; choose from {', '.join(providers)}") from None
+        raise ValueError(
+            f"unknown search provider {provider!r}; choose from {', '.join(providers)}"
+        ) from None
     return cls(**kwargs)

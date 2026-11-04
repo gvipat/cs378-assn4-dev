@@ -56,7 +56,7 @@ def chain_hashes(tokens: array, block_size: int) -> list[int]:
     width = tokens.itemsize * block_size
     for i in range(len(tokens) // block_size):
         h = hashlib.blake2b(prev, digest_size=16)
-        h.update(raw[i * width:(i + 1) * width])
+        h.update(raw[i * width : (i + 1) * width])
         prev = h.digest()
         out.append(int.from_bytes(prev, "little"))
     return out
@@ -149,7 +149,9 @@ class Trace:
         return {
             "jobs": len(self.jobs),
             "llm_calls": calls,
-            "tool_nodes": sum(1 for j in self.jobs for n in j.nodes if n.type == "tool"),
+            "tool_nodes": sum(
+                1 for j in self.jobs for n in j.nodes if n.type == "tool"
+            ),
             "prompt_tokens": prompt,
             "output_tokens": output,
             "unique_segment_tokens": unique,
@@ -165,7 +167,12 @@ class TraceError(ValueError):
 # ---------------------------------------------------------------- validation
 
 
-def validate(d: dict, *, require_jobs: int | None = None, seg_counts: dict[str, int] | None = None) -> list[str]:
+def validate(
+    d: dict,
+    *,
+    require_jobs: int | None = None,
+    seg_counts: dict[str, int] | None = None,
+) -> list[str]:
     """Check the trace structure and return a list of problems, empty if valid.
 
     When seg_counts is provided, also verify the stored token counts and
@@ -192,7 +199,9 @@ def validate(d: dict, *, require_jobs: int | None = None, seg_counts: dict[str, 
             errs.append(f"segment {sid}: needs text")
             continue
         if seg_counts is not None and seg.get("n_tokens") != seg_counts.get(sid):
-            errs.append(f"segment {sid}: n_tokens {seg.get('n_tokens')} != tokenizer {seg_counts.get(sid)}")
+            errs.append(
+                f"segment {sid}: n_tokens {seg.get('n_tokens')} != tokenizer {seg_counts.get(sid)}"
+            )
     jobs = d["jobs"]
     if require_jobs is not None and len(jobs) != require_jobs:
         errs.append(f"expected {require_jobs} jobs, found {len(jobs)}")
@@ -230,13 +239,17 @@ def validate(d: dict, *, require_jobs: int | None = None, seg_counts: dict[str, 
                 for sid in prompt + [n.get("output")]:
                     if sid not in segs:
                         errs.append(f"{where}: unknown segment {sid}")
-                if seg_counts is not None and not any(e.startswith(where) for e in errs):
+                if seg_counts is not None and not any(
+                    e.startswith(where) for e in errs
+                ):
                     n_out = seg_counts.get(n["output"], 0)
                     total = sum(seg_counts.get(s, 0) for s in prompt) + n_out
                     if n_out < 1:
                         errs.append(f"{where}: output must be at least one token")
                     if isinstance(nb, int) and -(-total // bs) > nb // 2:
-                        errs.append(f"{where}: {total} tokens do not fit in half of memory")
+                        errs.append(
+                            f"{where}: {total} tokens do not fit in half of memory"
+                        )
             elif t == "tool":
                 delay = n.get("delay")
                 if not isinstance(delay, (int, float)) or delay < 0:
@@ -272,12 +285,18 @@ def _has_cycle(nodes: list[dict]) -> bool:
 
 def load(path: str | Path, *, require_jobs: int | None = None) -> Trace:
     raw = Path(path).read_bytes()
-    t = from_dict(json.loads(raw), require_jobs=require_jobs, sha256=hashlib.sha256(raw).hexdigest())
+    t = from_dict(
+        json.loads(raw),
+        require_jobs=require_jobs,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
     t.path = str(path)
     return t
 
 
-def from_dict(d: dict, *, require_jobs: int | None = None, sha256: str | None = None) -> Trace:
+def from_dict(
+    d: dict, *, require_jobs: int | None = None, sha256: str | None = None
+) -> Trace:
     errs = validate(d, require_jobs=require_jobs)
     if errs:
         raise TraceError("; ".join(errs[:10]))
@@ -296,21 +315,47 @@ def from_dict(d: dict, *, require_jobs: int | None = None, sha256: str | None = 
         for nd in jd["nodes"]:
             deps = tuple(nd.get("deps", []))
             if nd["type"] == "llm":
-                node = LLMNode(id=nd["id"], stage=nd.get("stage", ""), deps=deps,
-                               prompt=tuple(nd["prompt"]), output=nd["output"])
+                node = LLMNode(
+                    id=nd["id"],
+                    stage=nd.get("stage", ""),
+                    deps=deps,
+                    prompt=tuple(nd["prompt"]),
+                    output=nd["output"],
+                )
                 node.n_prompt = sum(counts[s] for s in node.prompt)
                 node.n_output = counts[node.output]
                 nodes.append(node)
             else:
-                nodes.append(ToolNode(id=nd["id"], stage=nd.get("stage", ""), deps=deps, delay=float(nd["delay"])))
-        jobs.append(Job(id=jd["id"], arrival=float(jd["arrival"]), nodes=nodes, meta=jd.get("meta", {})))
+                nodes.append(
+                    ToolNode(
+                        id=nd["id"],
+                        stage=nd.get("stage", ""),
+                        deps=deps,
+                        delay=float(nd["delay"]),
+                    )
+                )
+        jobs.append(
+            Job(
+                id=jd["id"],
+                arrival=float(jd["arrival"]),
+                nodes=nodes,
+                meta=jd.get("meta", {}),
+            )
+        )
     if sha256 is None:
         sha256 = hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest()
     trace = Trace(
-        trace_id=d["trace_id"], family=d["family"], split=d.get("split", ""),
-        description=d.get("description", ""), memory=mem, engine=eng, jobs=jobs,
-        segments={s: d["segments"][s]["text"] for s in sids}, seg_tokens=seg_tokens,
-        sha256=sha256, generation=d.get("generation", {}),
+        trace_id=d["trace_id"],
+        family=d["family"],
+        split=d.get("split", ""),
+        description=d.get("description", ""),
+        memory=mem,
+        engine=eng,
+        jobs=jobs,
+        segments={s: d["segments"][s]["text"] for s in sids},
+        seg_tokens=seg_tokens,
+        sha256=sha256,
+        generation=d.get("generation", {}),
     )
     for _, node in trace.llm_nodes():
         node.hashes = tuple(chain_hashes(trace.tokens(node), mem.block_size))
@@ -323,21 +368,37 @@ def from_dict(d: dict, *, require_jobs: int | None = None, sha256: str | None = 
 class TraceBuilder:
     """Helper for generators. Segments are deduplicated by content hash.
 
-        b = TraceBuilder("dev-W1-0", "W1", "public_dev", num_blocks=192)
-        job = b.job(arrival=0.0)
-        n0 = job.llm("chat", prompt=[system_text, user_text, HEADER], output=output_text("hi"))
-        job.tool("think", 4.2, deps=[n0])
-        b.save("data/traces/public_dev/dev-W1-0.json")
+    b = TraceBuilder("dev-W1-0", "W1", "public_dev", num_blocks=192)
+    job = b.job(arrival=0.0)
+    n0 = job.llm("chat", prompt=[system_text, user_text, HEADER], output=output_text("hi"))
+    job.tool("think", 4.2, deps=[n0])
+    b.save("data/traces/public_dev/dev-W1-0.json")
     """
 
-    def __init__(self, trace_id: str, family: str, split: str, *, num_blocks: int, block_size: int = 256,
-                 description: str = "", engine: dict | None = None, generation: dict | None = None):
+    def __init__(
+        self,
+        trace_id: str,
+        family: str,
+        split: str,
+        *,
+        num_blocks: int,
+        block_size: int = 256,
+        description: str = "",
+        engine: dict | None = None,
+        generation: dict | None = None,
+    ):
         self.d = {
-            "schema": SCHEMA, "trace_id": trace_id, "family": family, "split": split,
-            "description": description, "tokenizer": tokenizer.TOKENIZER_NAME,
+            "schema": SCHEMA,
+            "trace_id": trace_id,
+            "family": family,
+            "split": split,
+            "description": description,
+            "tokenizer": tokenizer.TOKENIZER_NAME,
             "memory": {"num_blocks": num_blocks, "block_size": block_size},
             "engine": engine or {"max_num_seqs": 16, "max_num_batched_tokens": 8192},
-            "generation": generation or {}, "segments": {}, "jobs": [],
+            "generation": generation or {},
+            "segments": {},
+            "jobs": [],
         }
 
     def seg(self, text: str) -> str:
@@ -346,9 +407,16 @@ class TraceBuilder:
             self.d["segments"][sid] = {"text": text, "n_tokens": None}
         return sid
 
-    def job(self, arrival: float, job_id: str | None = None, meta: dict | None = None) -> "JobBuilder":
+    def job(
+        self, arrival: float, job_id: str | None = None, meta: dict | None = None
+    ) -> "JobBuilder":
         jid = job_id or f"J{len(self.d['jobs']):02d}"
-        jd = {"id": jid, "arrival": round(float(arrival), 6), "meta": meta or {}, "nodes": []}
+        jd = {
+            "id": jid,
+            "arrival": round(float(arrival), 6),
+            "meta": meta or {},
+            "nodes": [],
+        }
         self.d["jobs"].append(jd)
         return JobBuilder(self, jd)
 
@@ -356,7 +424,9 @@ class TraceBuilder:
         self.d["jobs"].sort(key=lambda j: j["arrival"])
         segs = self.d["segments"]
         sids = list(segs)
-        for sid, ids in zip(sids, tokenizer.encode_batch([segs[s]["text"] for s in sids])):
+        for sid, ids in zip(
+            sids, tokenizer.encode_batch([segs[s]["text"] for s in sids])
+        ):
             segs[sid]["n_tokens"] = len(ids)
         return self.d
 
@@ -382,18 +452,33 @@ class JobBuilder:
     def _nid(self) -> str:
         return f"n{len(self.jd['nodes'])}"
 
-    def llm(self, stage: str, prompt: list[str], output: str, deps: Iterable[str] = ()) -> str:
+    def llm(
+        self, stage: str, prompt: list[str], output: str, deps: Iterable[str] = ()
+    ) -> str:
         """`prompt` is a list of segment texts; `output` is the frozen output text
         (use trace.output_text). Returns the node id."""
         nid = self._nid()
-        self.jd["nodes"].append({
-            "id": nid, "type": "llm", "stage": stage, "deps": list(deps),
-            "prompt": [self.b.seg(t) for t in prompt], "output": self.b.seg(output),
-        })
+        self.jd["nodes"].append(
+            {
+                "id": nid,
+                "type": "llm",
+                "stage": stage,
+                "deps": list(deps),
+                "prompt": [self.b.seg(t) for t in prompt],
+                "output": self.b.seg(output),
+            }
+        )
         return nid
 
     def tool(self, stage: str, delay: float, deps: Iterable[str] = ()) -> str:
         nid = self._nid()
-        self.jd["nodes"].append({"id": nid, "type": "tool", "stage": stage, "deps": list(deps),
-                                 "delay": round(float(delay), 6)})
+        self.jd["nodes"].append(
+            {
+                "id": nid,
+                "type": "tool",
+                "stage": stage,
+                "deps": list(deps),
+                "delay": round(float(delay), 6),
+            }
+        )
         return nid

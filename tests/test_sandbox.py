@@ -35,7 +35,7 @@ def variant(**overrides):
         marker = f"    def {hook}(self"
         start = src.index(marker)
         nxt = src.find("\n    def ", start + 1)
-        sig = src[start:src.index("\n", start)]
+        sig = src[start : src.index("\n", start)]
         body = textwrap.indent(textwrap.dedent(body).strip(), " " * 8)
         src = src[:start] + sig + "\n" + body + "\n" + (src[nxt:] if nxt != -1 else "")
     return src
@@ -53,11 +53,14 @@ def test_bad_cap(chat_trace, tmp_path, ret):
     assert r.violation.startswith("invalid")
 
 
-@pytest.mark.parametrize("body", [
-    "return 'not-a-block'",
-    "return next(iter(view.blocks.values() if False else [b for b in view.blocks if view.blocks[b].ref_cnt > 0] or ['x']))",
-    "return 7",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return 'not-a-block'",
+        "return next(iter(view.blocks.values() if False else [b for b in view.blocks if view.blocks[b].ref_cnt > 0] or ['x']))",
+        "return 7",
+    ],
+)
 def test_bad_victim(pressure_trace, tmp_path, body):
     r = run(pressure_trace, tmp_path, variant(choose_victim=body))
     assert not r.valid
@@ -65,17 +68,25 @@ def test_bad_victim(pressure_trace, tmp_path, body):
 
 
 def test_exception(chat_trace, tmp_path):
-    r = run(chat_trace, tmp_path, variant(target_concurrency="raise ValueError('boom')"))
+    r = run(
+        chat_trace, tmp_path, variant(target_concurrency="raise ValueError('boom')")
+    )
     assert r.violation.startswith("exception") and "boom" in r.violation
 
 
 def test_exception_in_on_event(chat_trace, tmp_path):
-    r = run(chat_trace, tmp_path, variant(on_event="if event.kind == 'complete': 1 / 0"))
+    r = run(
+        chat_trace, tmp_path, variant(on_event="if event.kind == 'complete': 1 / 0")
+    )
     assert r.violation.startswith("exception")
 
 
 def test_state_overflow(chat_trace, tmp_path):
-    r = run(chat_trace, tmp_path, variant(on_event="state.setdefault('junk', []).append(repr(event) * 50)"))
+    r = run(
+        chat_trace,
+        tmp_path,
+        variant(on_event="state.setdefault('junk', []).append(repr(event) * 50)"),
+    )
     assert r.violation.startswith("state")
 
 
@@ -103,16 +114,19 @@ def test_infinite_loop_is_killed(chat_trace, tmp_path):
     assert r.violation.startswith("timeout")
 
 
-@pytest.mark.parametrize("body", [
-    "open('/etc/hosts').read()",
-    "import socket",
-    "import subprocess",
-    "import os; os.system('true')",
-    "import os; os.listdir('/')",
-    "import threading; threading.Thread(target=print).start()",
-    "import time; time.time()",
-    "import ctypes",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "open('/etc/hosts').read()",
+        "import socket",
+        "import subprocess",
+        "import os; os.system('true')",
+        "import os; os.listdir('/')",
+        "import threading; threading.Thread(target=print).start()",
+        "import time; time.time()",
+        "import ctypes",
+    ],
+)
 def test_forbidden_operations(chat_trace, tmp_path, body):
     r = run(chat_trace, tmp_path, variant(target_concurrency=f"{body}\nreturn 4"))
     assert r.violation is not None and r.violation.startswith("sandbox"), r.violation
@@ -131,7 +145,9 @@ def test_caught_violation_still_fails(chat_trace, tmp_path):
 
 
 def test_module_level_code_is_sandboxed(chat_trace, tmp_path):
-    src = "import os\nSECRET = open(os.path.expanduser('~/.ssh/id_rsa')).read()\n" + BASE
+    src = (
+        "import os\nSECRET = open(os.path.expanduser('~/.ssh/id_rsa')).read()\n" + BASE
+    )
     r = run(chat_trace, tmp_path, src)
     assert r.violation.startswith("sandbox")
 
@@ -150,7 +166,9 @@ def test_malicious_policy_cannot_read_trace_files(chat_trace, tmp_path):
 
 
 def test_print_does_not_break_the_protocol(chat_trace, tmp_path):
-    r = run(chat_trace, tmp_path, variant(target_concurrency="print('hello'); return 4"))
+    r = run(
+        chat_trace, tmp_path, variant(target_concurrency="print('hello'); return 4")
+    )
     assert r.valid, r.violation
 
 
@@ -161,7 +179,10 @@ def test_load_errors(chat_trace, tmp_path):
 
 def test_file_policy_runs_in_sandbox(chat_trace):
     m = chat_trace.memory
-    r = Replay(chat_trace, WorkerClient(FIFO, block_size=m.block_size, total_blocks=m.num_blocks)).run()
+    r = Replay(
+        chat_trace,
+        WorkerClient(FIFO, block_size=m.block_size, total_blocks=m.num_blocks),
+    ).run()
     assert r.valid
 
 
@@ -169,5 +190,9 @@ def test_preloaded_numpy_does_not_open_ctypes(chat_trace, tmp_path):
     """numpy is preloaded for policies and itself imports ctypes; a policy's own
     `import ctypes` must still be refused."""
     pytest.importorskip("numpy")
-    r = run(chat_trace, tmp_path, variant(target_concurrency="import numpy\nimport ctypes\nreturn 4"))
+    r = run(
+        chat_trace,
+        tmp_path,
+        variant(target_concurrency="import numpy\nimport ctypes\nreturn 4"),
+    )
     assert r.violation is not None and r.violation.startswith("sandbox"), r.violation

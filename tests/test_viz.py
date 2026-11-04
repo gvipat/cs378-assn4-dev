@@ -30,6 +30,7 @@ def test_record_sees_every_call_and_tool(rec):
 
 def test_plots_draw(rec):
     import matplotlib.pyplot as plt
+
     viz.timeline(rec)
     viz.memory(rec)
     viz.job_dag(rec.trace, rec.trace.jobs[0].id, rec=rec)
@@ -44,7 +45,12 @@ def test_critical_path_follows_the_longest_chain(tmp_path):
     plan = job.llm("plan", [chat_segment("user", "plan this")], output_text("ok"))
     fast = job.tool("search", 0.1, deps=[plan])
     slow = job.tool("search", 5.0, deps=[plan])
-    job.llm("write", [chat_segment("user", "write it")], output_text("done"), deps=[fast, slow])
+    job.llm(
+        "write",
+        [chat_segment("user", "write it")],
+        output_text("done"),
+        deps=[fast, slow],
+    )
     b.save(tmp_path / "dag.json")
     trace = load(tmp_path / "dag.json")
     assert viz.critical_path(trace, job.id) == [plan, slow, "n3"]

@@ -10,10 +10,23 @@ import pickle
 import random
 import time
 
-from ..policy import (EVENT_FIELDS, HOOK_CPU_LIMIT_S, STATE_LIMIT_BYTES, Block, Call, Event,
-                      JobInfo, Policy, ReplicaView, State, View, overridden_hooks, readonly)
+from ..policy import (
+    EVENT_FIELDS,
+    HOOK_CPU_LIMIT_S,
+    STATE_LIMIT_BYTES,
+    Block,
+    Call,
+    Event,
+    JobInfo,
+    Policy,
+    ReplicaView,
+    State,
+    View,
+    overridden_hooks,
+    readonly,
+)
 
-_cpu = time.thread_time   # bound before the sandbox patches the time module
+_cpu = time.thread_time  # bound before the sandbox patches the time module
 
 STATE_CHECK_EVERY = 256
 
@@ -29,7 +42,9 @@ class PolicyError(Exception):
 
 class PolicyRuntime:
 
-    def __init__(self, policy: Policy, *, block_size: int, total_blocks: int, seed: int):
+    def __init__(
+        self, policy: Policy, *, block_size: int, total_blocks: int, seed: int
+    ):
         self.policy = policy
         self.block_size = block_size
         self.total_blocks = total_blocks
@@ -44,7 +59,9 @@ class PolicyRuntime:
         self.max_cpu = 0.0
         self.n_events = 0
         self.n_decisions = 0
-        self.hooks = overridden_hooks(policy)     # optional hooks the policy defines itself
+        self.hooks = overridden_hooks(
+            policy
+        )  # optional hooks the policy defines itself
 
     # ------------------------------------------------------------ events
 
@@ -56,12 +73,14 @@ class PolicyRuntime:
             self._mirror(kind, t, fields)
             e = Event(kind, t, fields)
             collecting = gc.isenabled()
-            gc.disable()   # a collection triggered inside a hook would be charged to the policy
+            gc.disable()  # a collection triggered inside a hook would be charged to the policy
             c0 = _cpu()
             try:
                 on_event(e, self.state)
             except Exception as exc:
-                raise PolicyError("exception", f"on_event({kind}): {type(exc).__name__}: {exc}") from exc
+                raise PolicyError(
+                    "exception", f"on_event({kind}): {type(exc).__name__}: {exc}"
+                ) from exc
             finally:
                 dt = _cpu() - c0
                 if collecting:
@@ -84,15 +103,31 @@ class PolicyRuntime:
                 self.cand[b.id] = None
         elif kind == "alloc":
             c = self.calls.get(f["call"])
-            self.blocks[f["block"]] = Block(f["block"], f["parent_hash"], f["depth"], 1, 0, t, t,
-                                            c.stage if c else "", c.job if c else "",
-                                            f.get("block_hash", f["block"]), f.get("replica", 0))
+            self.blocks[f["block"]] = Block(
+                f["block"],
+                f["parent_hash"],
+                f["depth"],
+                1,
+                0,
+                t,
+                t,
+                c.stage if c else "",
+                c.job if c else "",
+                f.get("block_hash", f["block"]),
+                f.get("replica", 0),
+            )
         elif kind == "evict":
             del self.blocks[f["block"]]
             del self.cand[f["block"]]
         elif kind == "ready":
-            self.ready[f["call"]] = Call(f["call"], f["job"], f["stage"], f["input_tokens"],
-                                         tuple(f["block_hashes"]), t)
+            self.ready[f["call"]] = Call(
+                f["call"],
+                f["job"],
+                f["stage"],
+                f["input_tokens"],
+                tuple(f["block_hashes"]),
+                t,
+            )
             self.jobs[f["job"]].calls_ready += 1
         elif kind == "dispatch":
             c = self.ready.pop(f["call"])
@@ -125,12 +160,23 @@ class PolicyRuntime:
     def view(self, hdr: list) -> View:
         now, empty, active, waiting, running = hdr[:5]
         replicas = {d["id"]: ReplicaView(**d) for d in hdr[5]} if len(hdr) > 5 else {}
-        return View(now=now, block_size=self.block_size, total_blocks=self.total_blocks,
-                    empty_blocks=empty, active_blocks=active, cached_blocks=len(self.cand),
-                    waiting=waiting, running=running, ready=readonly(self.ready),
-                    calls=readonly(self.calls), blocks=readonly(self.blocks),
-                    jobs=readonly(self.jobs), rng=self.state.rng, replicas=readonly(replicas),
-                    replica=hdr[6] if len(hdr) > 6 else None)
+        return View(
+            now=now,
+            block_size=self.block_size,
+            total_blocks=self.total_blocks,
+            empty_blocks=empty,
+            active_blocks=active,
+            cached_blocks=len(self.cand),
+            waiting=waiting,
+            running=running,
+            ready=readonly(self.ready),
+            calls=readonly(self.calls),
+            blocks=readonly(self.blocks),
+            jobs=readonly(self.jobs),
+            rng=self.state.rng,
+            replicas=readonly(replicas),
+            replica=hdr[6] if len(hdr) > 6 else None,
+        )
 
     def _decide(self, hook: str, hdr: list, *args):
         v = self.view(hdr)
@@ -140,7 +186,9 @@ class PolicyRuntime:
         try:
             out = getattr(self.policy, hook)(v, *args, self.state)
         except Exception as exc:
-            raise PolicyError("exception", f"{hook}: {type(exc).__name__}: {exc}") from exc
+            raise PolicyError(
+                "exception", f"{hook}: {type(exc).__name__}: {exc}"
+            ) from exc
         finally:
             dt = _cpu() - c0
             if collecting:
@@ -169,12 +217,16 @@ class PolicyRuntime:
         return _ids(self._decide("dispatch_order", hdr, tuple(ready)), "dispatch_order")
 
     def admission_order(self, hdr: list, waiting: list):
-        return _ids(self._decide("admission_order", hdr, tuple(waiting)), "admission_order")
+        return _ids(
+            self._decide("admission_order", hdr, tuple(waiting)), "admission_order"
+        )
 
     def choose_preempted(self, hdr: list, running: list):
         out = self._decide("choose_preempted", hdr, tuple(running))
         if not isinstance(out, str):
-            raise PolicyError("invalid", f"choose_preempted returned {type(out).__name__}, not str")
+            raise PolicyError(
+                "invalid", f"choose_preempted returned {type(out).__name__}, not str"
+            )
         return out
 
     def _charge(self, dt: float, hook: str) -> None:
@@ -182,7 +234,10 @@ class PolicyRuntime:
         if dt > self.max_cpu:
             self.max_cpu = dt
         if dt > HOOK_CPU_LIMIT_S:
-            raise PolicyError("timeout", f"{hook} used {dt * 1000:.1f} ms of CPU (limit {HOOK_CPU_LIMIT_S * 1000:.0f} ms)")
+            raise PolicyError(
+                "timeout",
+                f"{hook} used {dt * 1000:.1f} ms of CPU (limit {HOOK_CPU_LIMIT_S * 1000:.0f} ms)",
+            )
 
     def _after_decision(self) -> None:
         self.n_decisions += 1
@@ -191,16 +246,26 @@ class PolicyRuntime:
 
     def check_state(self) -> int:
         try:
-            size = len(pickle.dumps((dict(self.state), self.policy.__dict__), protocol=4))
+            size = len(
+                pickle.dumps((dict(self.state), self.policy.__dict__), protocol=4)
+            )
         except Exception as exc:
-            raise PolicyError("state", f"state is not serializable: {type(exc).__name__}: {exc}") from exc
+            raise PolicyError(
+                "state", f"state is not serializable: {type(exc).__name__}: {exc}"
+            ) from exc
         if size > STATE_LIMIT_BYTES:
-            raise PolicyError("state", f"state is {size} bytes (limit {STATE_LIMIT_BYTES})")
+            raise PolicyError(
+                "state", f"state is {size} bytes (limit {STATE_LIMIT_BYTES})"
+            )
         return size
 
     def stats(self) -> dict:
-        return {"cpu_s": self.cpu, "max_hook_cpu_s": self.max_cpu, "events": self.n_events,
-                "decisions": self.n_decisions}
+        return {
+            "cpu_s": self.cpu,
+            "max_hook_cpu_s": self.max_cpu,
+            "events": self.n_events,
+            "decisions": self.n_decisions,
+        }
 
 
 def _ids(out, hook: str) -> list:

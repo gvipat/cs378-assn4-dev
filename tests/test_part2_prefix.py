@@ -35,7 +35,10 @@ def test_evicts_a_tail_where_lru_would_evict_the_root():
     h.allocate("Z")
     assert h.evicted == ["R1"]
     h.allocate("W")
-    assert h.evicted == ["R1", "S2"], "a parent becomes a leaf once its last child is evicted"
+    assert h.evicted == [
+        "R1",
+        "S2",
+    ], "a parent becomes a leaf once its last child is evicted"
 
 
 def test_plain_lru_without_leaf_first():
@@ -59,10 +62,25 @@ def test_falls_back_to_lru_when_no_candidate_is_a_leaf():
 
 def test_eviction_is_tracked_from_events_alone():
     p = policy()
-    for i, (block, parent) in enumerate([("b0", None), ("b1", "p0"), ("b2", "p1"), ("c0", None)]):
+    for i, (block, parent) in enumerate(
+        [("b0", None), ("b1", "p0"), ("b2", "p1"), ("c0", None)]
+    ):
         prefix = "p" + block[1] if block[0] == "b" else "q0"
-        p.on_event(Event("alloc", i, {"block": block, "parent_hash": parent, "depth": i, "call": "x",
-                                      "block_hash": prefix, "replica": 0}), {})
+        p.on_event(
+            Event(
+                "alloc",
+                i,
+                {
+                    "block": block,
+                    "parent_hash": parent,
+                    "depth": i,
+                    "call": "x",
+                    "block_hash": prefix,
+                    "replica": 0,
+                },
+            ),
+            {},
+        )
     assert p.choose_victim(None, ["b0", "b1", "b2", "c0"], {}) == "b2"
     p.on_event(Event("evict", 9, {"block": "b2"}), {})
     p.on_event(Event("hit", 10, {"block": "c0", "call": "y"}), {})
@@ -70,20 +88,49 @@ def test_eviction_is_tracked_from_events_alone():
 
 
 def view(loads, resident, prefix):
-    replicas = {r: ReplicaView(r, 100, 50, 25, 25, 0, n, n, True) for r, n in loads.items()}
-    blocks = {f"r{r}-{p}": Block(f"r{r}-{p}", None, 0, 0, block_hash=p, replica=r)
-              for r, ps in resident.items() for p in ps}
+    replicas = {
+        r: ReplicaView(r, 100, 50, 25, 25, 0, n, n, True) for r, n in loads.items()
+    }
+    blocks = {
+        f"r{r}-{p}": Block(f"r{r}-{p}", None, 0, 0, block_hash=p, replica=r)
+        for r, ps in resident.items()
+        for p in ps
+    }
     call = Call("c", "j", "s", 48, tuple(prefix), 0.0)
-    return View(1.0, 16, 200, 100, 50, 50, 0, 0, {"c": call}, {}, blocks, {}, random.Random(0), replicas)
+    return View(
+        1.0,
+        16,
+        200,
+        100,
+        50,
+        50,
+        0,
+        0,
+        {"c": call},
+        {},
+        blocks,
+        {},
+        random.Random(0),
+        replicas,
+    )
 
 
-@pytest.mark.parametrize("threshold,loads,expected", [
-    (1, {0: 3, 1: 2}, 0),     # replica 0 is within the threshold and caches more of the prompt
-    (0, {0: 3, 1: 2}, 1),     # only the least loaded replica is eligible
-    (-1, {0: 3, 1: 2}, 1),    # affinity disabled
-    (5, {0: 9, 1: 2}, 1),     # replica 0 is too far behind
-])
-def test_route_prefers_the_most_cached_blocks_within_the_threshold(threshold, loads, expected):
+@pytest.mark.parametrize(
+    "threshold,loads,expected",
+    [
+        (
+            1,
+            {0: 3, 1: 2},
+            0,
+        ),  # replica 0 is within the threshold and caches more of the prompt
+        (0, {0: 3, 1: 2}, 1),  # only the least loaded replica is eligible
+        (-1, {0: 3, 1: 2}, 1),  # affinity disabled
+        (5, {0: 9, 1: 2}, 1),  # replica 0 is too far behind
+    ],
+)
+def test_route_prefers_the_most_cached_blocks_within_the_threshold(
+    threshold, loads, expected
+):
     v = view(loads, {0: ["p1", "p2"], 1: ["p1", "p3"]}, ["p1", "p2", "p3"])
     assert policy(balance_threshold=threshold).route_call(v, "c", {}) == expected
 
@@ -97,7 +144,11 @@ def test_route_breaks_ties_by_load_then_id():
 
 @pytest.mark.slow
 def test_reference_settings_reproduce_the_reference():
-    r = score(str(PATH), split=str(REPO / "data/traces/public_dev/dev-W3-0.json"),
-              params={"leaf_first": False, "balance_threshold": -1}, workers=1)
+    r = score(
+        str(PATH),
+        split=str(REPO / "data/traces/public_dev/dev-W3-0.json"),
+        params={"leaf_first": False, "balance_threshold": -1},
+        workers=1,
+    )
     assert r.valid, r.violations
     assert all(t.ratio == 1.0 for t in r.by_trace.values())

@@ -19,7 +19,16 @@ class _PageText(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style", "noscript", "svg", "nav", "footer", "header"}:
             self.hidden.append(tag)
-        elif not self.hidden and tag in {"p", "div", "br", "li", "h1", "h2", "h3", "tr"}:
+        elif not self.hidden and tag in {
+            "p",
+            "div",
+            "br",
+            "li",
+            "h1",
+            "h2",
+            "h3",
+            "tr",
+        }:
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
@@ -35,17 +44,25 @@ class _PageText(HTMLParser):
 
 async def _check_public_url(url):
     parsed = urlsplit(url)
-    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
-            or parsed.password or parsed.port not in {None, 80, 443}):
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.port not in {None, 80, 443}
+    ):
         raise PermanentToolError("page fetch: expected a public HTTP(S) URL")
     try:
         addresses = await asyncio.get_running_loop().getaddrinfo(
-            parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80),
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
             type=socket.SOCK_STREAM,
         )
     except OSError as error:
         raise TransientToolError("page fetch: hostname lookup failed") from error
-    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
+    if not addresses or any(
+        not ipaddress.ip_address(row[4][0]).is_global for row in addresses
+    ):
         raise PermanentToolError("page fetch: source must resolve to a public address")
 
 
@@ -61,11 +78,15 @@ async def fetch_page_text(url: str, *, timeout: float = 30, client=None) -> str:
         target = url
         for _ in range(6):
             await _check_public_url(target)
-            async with http.stream("GET", target, timeout=timeout, follow_redirects=False) as response:
+            async with http.stream(
+                "GET", target, timeout=timeout, follow_redirects=False
+            ) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     location = response.headers.get("location")
                     if not location:
-                        raise PermanentToolError("page fetch: redirect has no destination")
+                        raise PermanentToolError(
+                            "page fetch: redirect has no destination"
+                        )
                     target = urljoin(target, location)
                     continue
                 if response.status_code == 429 or response.status_code >= 500:
@@ -74,21 +95,32 @@ async def fetch_page_text(url: str, *, timeout: float = 30, client=None) -> str:
                     raise PermanentToolError(f"page fetch: HTTP {response.status_code}")
                 kind = response.headers.get("content-type", "").split(";", 1)[0].lower()
                 if kind not in {"text/html", "application/xhtml+xml", "text/plain"}:
-                    raise PermanentToolError("page fetch: only HTML and plain-text sources are supported")
+                    raise PermanentToolError(
+                        "page fetch: only HTML and plain-text sources are supported"
+                    )
                 chunks, size = [], 0
                 async for chunk in response.aiter_bytes():
                     size += len(chunk)
                     if size > 2 * 1024 * 1024:
-                        raise PermanentToolError("page fetch: source exceeds the 2 MiB download limit")
+                        raise PermanentToolError(
+                            "page fetch: source exceeds the 2 MiB download limit"
+                        )
                     chunks.append(chunk)
-                text = b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+                text = b"".join(chunks).decode(
+                    response.encoding or "utf-8", errors="replace"
+                )
                 if kind != "text/plain":
                     parser = _PageText()
                     parser.feed(text)
-                    text = "\n".join(line for raw in "".join(parser.parts).splitlines()
-                                     if (line := " ".join(raw.split())))
+                    text = "\n".join(
+                        line
+                        for raw in "".join(parser.parts).splitlines()
+                        if (line := " ".join(raw.split()))
+                    )
                 if not text.strip():
-                    raise PermanentToolError("page fetch: source contained no readable text")
+                    raise PermanentToolError(
+                        "page fetch: source contained no readable text"
+                    )
                 return text
         raise PermanentToolError("page fetch: too many redirects")
 

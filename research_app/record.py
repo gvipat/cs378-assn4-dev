@@ -25,9 +25,18 @@ from .llm import FakeLLM
 from .tracing import Recording
 
 
-def record_reports(questions: list[dict], *, snapshot: str = "v2", seed: int = 0, cap: int = 8,
-                   latency: ToolLatency | None = None, failure_rate: float = 0.0, bad_citation_rate: float = 0.2,
-                   faults: FaultFn | None = None, settings: AgentSettings = AgentSettings()) -> list[Recording]:
+def record_reports(
+    questions: list[dict],
+    *,
+    snapshot: str = "v2",
+    seed: int = 0,
+    cap: int = 8,
+    latency: ToolLatency | None = None,
+    failure_rate: float = 0.0,
+    bad_citation_rate: float = 0.2,
+    faults: FaultFn | None = None,
+    settings: AgentSettings = AgentSettings(),
+) -> list[Recording]:
     """Return one recording per question in input order, with ids such as R00 and R01.
 
     `latency` defaults to ToolLatency(seed=seed, failure_rate=failure_rate);
@@ -38,8 +47,17 @@ def record_reports(questions: list[dict], *, snapshot: str = "v2", seed: int = 0
     llm = FakeLLM(bad_citation_rate=bad_citation_rate)
 
     async def go() -> list[Recording]:
-        _, recs = await run_reports(questions, llm=llm, cap=ConcurrencyLimiter(cap), snapshot=snapshot, live=False,
-                                    latency=latency, faults=faults, settings=settings, backend="fake-record")
+        _, recs = await run_reports(
+            questions,
+            llm=llm,
+            cap=ConcurrencyLimiter(cap),
+            snapshot=snapshot,
+            live=False,
+            latency=latency,
+            faults=faults,
+            settings=settings,
+            backend="fake-record",
+        )
         return recs
 
     return asyncio.run(go())
