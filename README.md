@@ -116,9 +116,11 @@ pytest tests/test_part1_concurrency.py
 
 ### 1.2 Research graph
 
-Read the workflow in `research_app/agent.py` alongside the diagram to understand
-the parallel branches, their join, and the follow-up and repair paths.
-Run one report in notebook section 3 and inspect its citations.
+The workflow in `research_app/agent.py` is supplied; you do not need to modify
+it, and your understanding of it will be assessed in the grading interview.
+Read `research_app/agent.py` alongside the diagram to understand the parallel
+branches, their join, and the follow-up and repair paths, then run one report
+in notebook section 3 and inspect its citations.
 
 ```bash
 pytest tests/test_part1_agent.py tests/test_part1_citations.py tests/test_part1_llm.py tests/test_part1_trace_export.py
@@ -126,7 +128,8 @@ pytest tests/test_part1_agent.py tests/test_part1_citations.py tests/test_part1_
 
 ### 1.3 Workload analysis
 
-Implement the four functions in `research_app/analysis.py`. `critical_path`
+Implement the four functions in `research_app/analysis.py` (used by the plots in
+notebook section 5 after you generate the runs in section 4). `critical_path`
 takes a run loaded with `load_run("runs/c2")`; the other three take
 `run.llm_calls()`, the run's completed LLM calls in start order. Each `Op`
 records an operation's dependencies, times, slot wait, token counts, and
