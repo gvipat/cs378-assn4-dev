@@ -7,24 +7,12 @@ CS 378: Systems for Generative AI, Fall 2026. Complete this assignment with your
 
 - [Overview](#overview)
 - [Setup](#setup)
-- [Part 1: Run and analyze a supplied deep research agent](#part-1-build-and-analyze-a-deep-research-agent)
+- [Part 1: Run and analyze a deep research agent](#part-1-run-and-analyze-a-deep-research-agent)
 - [Part 2: KV-cache eviction and routing](#part-2-kv-cache-eviction-and-routing)
 - [Part 3: Agent-driven policy research](#part-3-agent-driven-policy-research)
 - [Submission](#submission)
 - [Grading](#grading)
 - [Acknowledgments](#acknowledgments)
-
-This README is the complete assignment guide: implementation requirements,
-experiments, report questions, grading, and submission. Follow Parts 1–3 below
-in order and use each notebook to run checks and generate plots. Notebook prose
-explains the cells; it adds no separate requirements. TODO comments are local
-reminders of the contracts specified here.
-
-Part 1 has been shortened: the complete research agent, including all graph
-nodes, fan-out, and graph wiring, is now supplied. If you already implemented
-those functions, you may keep your working version. The report questions and
-grading weights are unchanged; `research_app/agent.py` is no longer a required
-submission file, and graph understanding is assessed in the interview.
 
 ## Overview
 
@@ -34,7 +22,7 @@ Previously in [Assignment 3](../assignment3/README.md), we studied how an LLM se
 
 At the same time, agentic workflows create new opportunities for optimization. Related LLM calls often share long prompt prefixes, allowing the inference engine to reuse previously computed KV-cache blocks instead of recomputing prefill from scratch. Retaining cached blocks, however, consumes GPU memory that active requests also need. Serving agentic workloads efficiently therefore requires jointly managing call dependencies, concurrency, request scheduling, replica routing, and KV-cache eviction.
 
-In this assignment, you will study these system tradeoffs first-hand and then explore an automated approach to designing serving policies. After analyzing the supplied research agent and implementing KV-cache eviction and routing policies, you will build an LLM-driven agentic research system that iteratively proposes, implements, and evaluates serving policies. Along the way, you will evaluate both the policies discovered by your agents and the reliability, cost, and generalizability of the automated research process itself.
+In this assignment, you will study these system tradeoffs first-hand and then explore an automated approach to designing serving policies. After analyzing the research agent and implementing KV-cache eviction and routing policies, you will build an LLM-driven agentic research system that iteratively proposes, implements, and evaluates serving policies. Along the way, you will evaluate both the policies discovered by your agents and the reliability, cost, and generalizability of the automated research process itself.
 
 Parts 2 and 3 run on a CPU simulator built on [Vidur](https://github.com/microsoft/vidur/tree/25e0082dbbfb206fb0477c3ebbededa7ead78949) that models Llama-3-8B on one or two A100 GPUs, each with its own request queue and KV cache. The figure below shows how calls move from the application into the inference engine, with blue labels marking the hooks your policy can implement:
 
@@ -68,16 +56,14 @@ Launch Jupyter (`jupyter lab`), open the notebooks, and select the **CS 378 Assi
 
 We will update this section with details of Bedrock LLM API access.
 
-## Part 1: Build and analyze a deep research agent
+## Part 1: Run and analyze a deep research agent
 
-**Runnable companion:** [Part 1 notebook](notebooks/part1_deep_research.ipynb). Implement the limiter and analysis; the complete agent is supplied.
+[Notebook](notebooks/part1_deep_research.ipynb)
 
-In this part, you will run a supplied LangGraph research agent on 16
+In this part, you will run a LangGraph research agent on 16
 questions and measure the workload it sends to an inference engine: which
 operations determine each report's latency, how much prompt content repeats
-and for how long, and how much KV memory concurrency costs. Work through
-[`notebooks/part1_deep_research.ipynb`](notebooks/part1_deep_research.ipynb);
-the requirements and questions are all below.
+and for how long, and how much KV memory concurrency costs.
 
 ### The agent
 
@@ -130,11 +116,9 @@ pytest tests/test_part1_concurrency.py
 
 ### 1.2 Research graph
 
-The complete LangGraph workflow in `research_app/agent.py` is supplied,
-including `fan_out`, `build_graph`, all nodes, and failure handling.
-There are no implementation TODOs in this file. Read it alongside the diagram
-to understand the parallel branches, their join, and the follow-up and repair
-paths. Use notebook section 3 to run one report and inspect its citations.
+Read the workflow in `research_app/agent.py` alongside the diagram to understand
+the parallel branches, their join, and the follow-up and repair paths.
+Run one report in notebook section 3 and inspect its citations.
 
 ```bash
 pytest tests/test_part1_agent.py tests/test_part1_citations.py tests/test_part1_llm.py tests/test_part1_trace_export.py
@@ -241,16 +225,14 @@ not graded.
 
 ## Part 2: KV-cache eviction and routing
 
-**Runnable companion:** [Part 2 notebook](notebooks/part2_lru_policy.ipynb). Implement and compare eviction and routing policies.
+[Notebook](notebooks/part2_lru_policy.ipynb)
 
 An inference engine can keep a finished call's KV blocks so that a later call
 with the same prompt prefix skips prefill. Those cached blocks, however, take
 memory that running calls need. In this part, you will implement three
 policies for the simulated engine: LRU eviction, which becomes the reference
 for Part 3; eviction that keeps prefix trees reusable; and routing that trades
-cache hits against load across two GPUs. Work through
-[`notebooks/part2_lru_policy.ipynb`](notebooks/part2_lru_policy.ipynb);
-the requirements and questions are all below.
+cache hits against load across two GPUs.
 
 ### The simulator
 
@@ -266,7 +248,7 @@ and KV cache. The traces cover eight workload families:
 A job's **latency** is the time from its arrival until its last call or tool
 finishes. On a trace, a policy's **speedup** is the reference's mean job latency
 divided by the policy's; `score()` combines speedups across the eight families
-(see the [scoring and policy rules](#scoring)).
+(see [Scoring](#scoring)).
 
 As in vLLM's prefix caching, KV memory is a pool of 16-token blocks, and each
 full block of a prompt is identified by a `block_hash` of its tokens and every
@@ -309,7 +291,7 @@ own data, and `state.rng` is the only allowed source of randomness. Ids are
 opaque and differ between traces.
 
 Policies run in a sandbox with 50 ms of CPU per hook call and 4 MiB of state;
-the [scoring and policy rules](#policy-rules) lists the rules.
+see [Policy rules](#policy-rules).
 
 ```bash
 python -m agentkv.score --policy policies/prefix_policy.py --split public_dev --params '{"balance_threshold": 2}'
@@ -405,13 +387,11 @@ under `candidates/` rather than by editing the two graded files.
 
 ## Part 3: Agent-driven policy research
 
-**Runnable companion:** [Part 3 notebook](notebooks/part3_policy_research.ipynb). Build and evaluate an automated policy research system.
+[Notebook](notebooks/part3_policy_research.ipynb)
 
 In this part, you will build a system in which LLM agents propose, implement,
 and evaluate serving policies. The system selects your final policy, and you
-measure what its agents added beyond the policies you wrote yourself. Work through
-[`notebooks/part3_policy_research.ipynb`](notebooks/part3_policy_research.ipynb);
-the requirements and questions are all below.
+measure what its agents added beyond the policies you wrote yourself.
 
 ![One possible research system and the evaluation splits.](docs/figures/research_system.svg)
 
@@ -525,8 +505,8 @@ your logs.
 - Draw its LLM calls, deterministic steps, tools, stored state, and the points where a person can intervene.
 - State the objective, the feedback agents see, how invalid candidates are handled, how the final policy is selected, and when a campaign stops.
 - Name one design alternative you tried or rejected, and what the evidence showed.
-- Explain how you choose parents or lineages, handle invalid candidates, and
-  decide which split screens candidates before `public_dev`.
+- Explain how you choose parents or lineages and which split screens
+  candidates before `public_dev`.
 
 **Q2. What the agents contribute.** Using one model and one token budget (state both):
 

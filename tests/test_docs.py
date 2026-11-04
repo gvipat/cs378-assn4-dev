@@ -1,4 +1,4 @@
-"""The handouts, README, and notebooks only point at things that exist, and are
+"""The README, trace format, and notebooks only point at things that exist, and are
 formatted consistently: every referenced file and dotted name resolves, every
 code fence names its language, and notebooks ship valid and without outputs."""
 
@@ -9,7 +9,7 @@ import re
 import pytest
 from conftest import REPO
 
-DOCS = [REPO / "README.md", *sorted((REPO / "docs").glob("part*_handout.md")), REPO / "docs" / "trace_format.md"]
+DOCS = [REPO / "README.md", REPO / "docs" / "trace_format.md"]
 NOTEBOOKS = sorted((REPO / "notebooks").glob("*.ipynb"))
 # Paths students create themselves.
 CREATED = ("runs/", "candidates/", "research/", "out.json")

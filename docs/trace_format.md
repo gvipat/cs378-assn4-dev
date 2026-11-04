@@ -55,4 +55,4 @@ Trace files use 256-token blocks. The simulator rebuilds prefix hashes in
 16-token blocks with the same KV token quota per replica, and changes no
 arrivals, dependencies, tool delays, or prompt and output lengths. Some prompts
 reach 32K tokens, beyond Llama-3-8B's 8K context; the simulator uses them for
-timing only. See the [Part 2 handout](part2_handout.md#the-simulator).
+timing only. See [The simulator](../README.md#the-simulator).
