@@ -187,19 +187,19 @@ blocks and show potential reuse.
 
 The notebook plots your analysis and replays your C = 8 run in the simulator at
 caps (1, 2, 4, 8, 16) and KV capacities of (12,288, 16,384, 49,152,
-393,216) tokens, using `policies/fifo.py` on one replica. Answer Q1–Q4 with numbers
-from your runs.
+393,216) tokens, using `policies/fifo.py` on one replica, then replays caps 4–8 at
+16,384 tokens. Answer Q1–Q4 with numbers from your runs.
 
 **Q1. Critical path.**
 
 - For one C = 2 report, show its DAG with the critical path, and give the seconds of gap, slot wait, LLM service, and tool service on the path.
 - Give the same breakdown averaged over all reports at C = 2 and at C = 8. Why does the bottleneck shift between C = 2 and C = 8?
-- At C = 8, each report runs its subtopic branches in parallel (`Send`) and fetches up to three documents in parallel (`asyncio.gather`). From your trace, how many seconds per report would the critical path grow if subtopics ran sequentially, and how much if fetches within a branch ran sequentially? Which single change to the agent workflow or prompt structure would shorten the C = 8 critical path most, and by roughly how much? (You do not need to implement it.)
+- At C = 8, each report runs its subtopic branches in parallel (`Send`) and fetches up to three documents in parallel (`asyncio.gather`). From your trace, how many seconds per report would the critical path grow if subtopics ran sequentially, and how much if fetches within a branch ran sequentially? Which single change to the agent workflow or output length would shorten the C = 8 critical path most, and by roughly how much? (You do not need to implement it.)
 
 **Q2. Prefix reuse.**
 
-- Report `prefix_hit_rate` overall and per stage (as notebook section 5b computes it) at C = 2 and C = 8, and name the prompt content each stage reuses. Why does `extract` have the lowest hit rate despite accounting for the most prompt tokens?
-- For each stage that reuses blocks, give the fraction of reuses with `interval == 0` (the block was still held by an active call), the 90th-percentile interval, and the maximum interval. Why are most reuse intervals zero, and what creates the multi-second tail in `extract`?
+- Report `prefix_hit_rate` overall and per stage (as notebook section 5b computes it) at C = 8, and name the prompt content each stage reuses. How does the overall rate change at C = 2, and why? Why is `extract`, which accounts for the most prompt tokens, the stage with the lowest hit rate?
+- At C = 8, for each stage that reuses blocks, give the fraction of reuses with `interval == 0` (an earlier call holding the block had not finished), the 90th-percentile interval, and the maximum interval. Why are most reuse intervals zero, and what creates the multi-second tail in `extract`? C = 2 reports more zero intervals than C = 8, even though fewer calls run at once. Why?
 - Which full prefix blocks in this workload would a cache never reuse, and why?
 
 **Q3. Concurrency and memory.**
@@ -211,12 +211,12 @@ from your runs.
   | C = 2 |                     |          |                |                           |                     |                         |
   | C = 8 |                     |          |                |                           |                     |                         |
 
-- In the simulator replay sweep, why does raising the cap from 4 to 8 or 16 _increase_ mean report latency at 12,288 and 16,384 KV tokens, while decreasing it at 49,152 and 393,216 tokens? (Hint: inspect `rec.result.diag` for `preemptions`, `recomputed_tokens`, and `evictions`.)
-- On one 80 GB A100 with 16 GB of Llama-3-8B weights, which cap would you choose for this workload, and how much KV memory would remain free at its peak? If you instead served this workload inside a 2 GB KV budget (16,384 tokens), which cap would you choose and why?
+- On the notebook's caps, latency falls or levels off at 49,152 and 393,216 KV tokens but rises above C = 4 at 12,288. Explain why using `preemptions`, `recomputed_tokens`, and `evictions`. What does your curve do at 16,384, and what does that imply about setting a cap near the memory limit?
+- On one 80 GB A100 with 16 GB of Llama-3-8B weights, which cap would you choose for this workload, and how much KV memory would remain free at its peak? If you instead served this workload inside a 2 GB KV budget (16,384 tokens), which of caps 4–8 would you choose and why?
 
 **Q4. Failures.**
 
-- Compare `runs/c8-faults` with `runs/c8`: count retried operations, follow-up branches, and repairs, and say how many of each lie on a critical path. Why do fewer than half of the tool retries land on a critical path?
+- Compare `runs/c8-faults` with `runs/c8`: count retried operations, follow-up branches, and repairs. Why does every follow-up and repair lie on a critical path? In `runs/c8-faults`, what fraction of all tool operations lie on a critical path, and what fraction of retried tool operations do? Why do the two differ?
 - Give the median and maximum report latency of both runs.
 - In `TracingClient.llm_call`, an LLM call keeps its concurrency slot while sleeping during retry backoff. At C = 2, when would releasing the slot during backoff hurt vs. help mean report latency (considering both your C = 2 slot waits and what happens to a call's KV blocks if another call takes its slot under tight memory)?
 

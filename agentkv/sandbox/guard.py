@@ -43,7 +43,7 @@ DENY_IMPORTS = {
     "agentkv.engine",
     "agentkv.trace",
     "agentkv.tokenizer",
-    "agentkv.baselines",
+    "agentkv.baselines",  # starter: allow-ref
     "research_app",
     "tracegen",
     "grader",  # starter: allow-ref
