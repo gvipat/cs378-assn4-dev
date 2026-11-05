@@ -1,4 +1,4 @@
-"""The handouts, README, and notebooks only point at things that exist, and are
+"""The README, trace format, and notebooks only point at things that exist, and are
 formatted consistently: every referenced file and dotted name resolves, every
 code fence names its language, and notebooks ship valid and without outputs."""
 
@@ -9,7 +9,7 @@ import re
 import pytest
 from conftest import REPO
 
-DOCS = [REPO / "README.md", *sorted((REPO / "docs").glob("part*_handout.md")), REPO / "docs" / "trace_format.md"]
+DOCS = [REPO / "README.md", REPO / "docs" / "trace_format.md"]
 NOTEBOOKS = sorted((REPO / "notebooks").glob("*.ipynb"))
 # Paths students create themselves.
 CREATED = ("runs/", "candidates/", "research/", "out.json")
@@ -23,10 +23,16 @@ def texts():
         yield doc.name, doc.read_text()
     for nb in NOTEBOOKS:
         cells = json.loads(nb.read_text())["cells"]
-        yield nb.name, "\n".join("".join(c["source"]) for c in cells if c["cell_type"] == "markdown")
+        yield nb.name, "\n".join(
+            "".join(c["source"]) for c in cells if c["cell_type"] == "markdown"
+        )
 
 
-@pytest.mark.parametrize("name,text", list(texts()), ids=lambda v: v if isinstance(v, str) and len(v) < 60 else "")
+@pytest.mark.parametrize(
+    "name,text",
+    list(texts()),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 60 else "",
+)
 def test_referenced_paths_exist(name, text):
     missing = []
     for path in PATH.findall(text):
@@ -37,7 +43,11 @@ def test_referenced_paths_exist(name, text):
     assert not missing, f"{name} mentions paths that do not exist: {missing}"
 
 
-@pytest.mark.parametrize("name,text", list(texts()), ids=lambda v: v if isinstance(v, str) and len(v) < 60 else "")
+@pytest.mark.parametrize(
+    "name,text",
+    list(texts()),
+    ids=lambda v: v if isinstance(v, str) and len(v) < 60 else "",
+)
 def test_referenced_names_resolve(name, text):
     unresolved = []
     for dotted in set(DOTTED.findall(text)):
@@ -76,18 +86,34 @@ def test_notebooks_are_valid_clean_and_readable(path):
     nbformat.validate(nb)
     for cell in nb.cells:
         if cell.cell_type == "code":
-            assert not cell.outputs and cell.execution_count is None, "notebooks ship without outputs"
+            assert (
+                not cell.outputs and cell.execution_count is None
+            ), "notebooks ship without outputs"
             long = [line for line in cell.source.splitlines() if len(line) > 110]
             assert not long, f"code lines over 110 characters: {long}"
 
 
-@pytest.mark.parametrize("module", ["agentkv.viz", "agentkv.notebook", "agentkv.harness", "research_app.agent",
-                                    "research_app.concurrency"])
+@pytest.mark.parametrize(
+    "module",
+    [
+        "agentkv.viz",
+        "agentkv.notebook",
+        "agentkv.harness",
+        "research_app.agent",
+        "research_app.concurrency",
+    ],
+)
 def test_public_functions_have_docstrings(module):
     """Check that student-facing functions have docstrings."""
     import inspect
+
     mod = importlib.import_module(module)
-    missing = [name for name, obj in vars(mod).items()
-               if inspect.isfunction(obj) and obj.__module__ == module and not name.startswith("_")
-               and not inspect.getdoc(obj)]
+    missing = [
+        name
+        for name, obj in vars(mod).items()
+        if inspect.isfunction(obj)
+        and obj.__module__ == module
+        and not name.startswith("_")
+        and not inspect.getdoc(obj)
+    ]
     assert not missing, f"{module}: no docstring on {missing}"

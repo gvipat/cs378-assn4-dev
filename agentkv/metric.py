@@ -16,11 +16,11 @@ from __future__ import annotations
 import math
 import statistics
 
-G_TARGET = 0.09                         # g that earns full performance points
+G_TARGET = 0.09  # g that earns full performance points
 FULL_CREDIT_SPEEDUP = 1 / (1 - G_TARGET)
 FAMILY_FLOOR = 0.90
 MAX_POINTS = 30.0
-PARITY_POINTS = 10.0                    # a valid policy that matches the reference
+PARITY_POINTS = 10.0  # a valid policy that matches the reference
 FAMILY_ORDER = ("D", "W1", "W2", "W3", "W4", "W5", "M1", "M2")
 
 
@@ -35,7 +35,10 @@ def speedup(log_ratios: dict[str, list[float]]) -> float:
 
 
 def points(g_eff: float, g_target: float = G_TARGET) -> float:
-    return min(max(PARITY_POINTS + (MAX_POINTS - PARITY_POINTS) * g_eff / g_target, 0.0), MAX_POINTS)
+    return min(
+        max(PARITY_POINTS + (MAX_POINTS - PARITY_POINTS) * g_eff / g_target, 0.0),
+        MAX_POINTS,
+    )
 
 
 def summarize(rows: list[dict], *, g_target: float = G_TARGET) -> dict:
@@ -48,8 +51,18 @@ def summarize(rows: list[dict], *, g_target: float = G_TARGET) -> dict:
         logs.setdefault(r["family"], []).append(math.log(r["ratio"]))
     s = speedup(logs)
     g = 1.0 - 1.0 / s
-    by_family = {f: math.exp(statistics.fmean(v)) for f, v in sorted(logs.items(), key=lambda kv: family_key(kv[0]))}
+    by_family = {
+        f: math.exp(statistics.fmean(v))
+        for f, v in sorted(logs.items(), key=lambda kv: family_key(kv[0]))
+    }
     shortfall = {f: FAMILY_FLOOR - v for f, v in by_family.items() if v < FAMILY_FLOOR}
     g_eff = g - sum(shortfall.values())
-    return {"speedup": s, "g": g, "g_eff": g_eff, "points": points(g_eff, g_target), "by_family": by_family,
-            "capped": bool(shortfall), "regressed_families": sorted(shortfall, key=family_key)}
+    return {
+        "speedup": s,
+        "g": g,
+        "g_eff": g_eff,
+        "points": points(g_eff, g_target),
+        "by_family": by_family,
+        "capped": bool(shortfall),
+        "regressed_families": sorted(shortfall, key=family_key),
+    }

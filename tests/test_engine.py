@@ -14,7 +14,13 @@ from agentkv.trace import load
 
 def replay(trace, policy=FIFO, params=None, seed=0, macro=True, check=0):
     m = trace.memory
-    client = InProcessClient(policy, params=params, seed=seed, block_size=m.block_size, total_blocks=m.num_blocks)
+    client = InProcessClient(
+        policy,
+        params=params,
+        seed=seed,
+        block_size=m.block_size,
+        total_blocks=m.num_blocks,
+    )
     rp = Replay(trace, client, seed=seed, check_every=check)
     rp.engine.macro = macro
     return rp.run(), client
@@ -42,9 +48,13 @@ def test_rekeyed_ids_produce_identical_decisions(pressure_trace):
     assert a.flows == b.flows
     ids_a = set(ca.rt.blocks) | set(ca.rt.jobs)
     ids_b = set(cb.rt.blocks) | set(cb.rt.jobs)
-    assert not ids_a & ids_b          # different opaque ids...
-    assert a.diag == {**b.diag, "wall_s": a.diag["wall_s"], "policy_cpu_s": a.diag["policy_cpu_s"],
-                      "max_hook_cpu_s": a.diag["max_hook_cpu_s"]}   # ...same behavior
+    assert not ids_a & ids_b  # different opaque ids...
+    assert a.diag == {
+        **b.diag,
+        "wall_s": a.diag["wall_s"],
+        "policy_cpu_s": a.diag["policy_cpu_s"],
+        "max_hook_cpu_s": a.diag["max_hook_cpu_s"],
+    }  # ...same behavior
 
 
 class Recorder(Policy):
@@ -56,7 +66,9 @@ class Recorder(Policy):
         self.log.append((event.kind, event.t, dict(event._f)))
 
     def target_concurrency(self, view, state):
-        self.log.append(("tc", view.now, {"ready": len(view.ready), "flight": view.in_flight}))
+        self.log.append(
+            ("tc", view.now, {"ready": len(view.ready), "flight": view.in_flight})
+        )
         return 4
 
     def choose_victim(self, view, candidates, state):
@@ -86,7 +98,7 @@ def test_no_future_information(tmp_path):
     last["arrival"] = 60.0
     for n in last["nodes"]:
         if n["type"] == "tool":
-            n["delay"] = 7.5          # tool durations of the future job differ too
+            n["delay"] = 7.5  # tool durations of the future job differ too
     (tmp_path / "b.json").write_text(json.dumps(d))
     b = load(tmp_path / "b.json")
     t_cut = min(j.arrival for j in a.jobs[-1:])
@@ -95,13 +107,15 @@ def test_no_future_information(tmp_path):
     la = [e for e in ca.rt.policy.log if e[1] < t_cut]
     lb = [e for e in cb.rt.policy.log if e[1] < t_cut]
     assert la and _normalize(la) == _normalize(lb)
-    for kind, _, fields in ca.rt.policy.log:   # no output lengths before completion
+    for kind, _, fields in ca.rt.policy.log:  # no output lengths before completion
         if kind in ("ready", "dispatch", "admit"):
             assert "output_tokens" not in fields
 
 
 def test_liveness_with_largest_call_at_half_memory(tmp_path):
-    t = build_chat_trace(tmp_path / "tight.json", jobs=8, num_blocks=100, fanout=2, gap=0.0, think=(0, 0))
+    t = build_chat_trace(
+        tmp_path / "tight.json", jobs=8, num_blocks=100, fanout=2, gap=0.0, think=(0, 0)
+    )
     biggest = max(-(-n.n_total // t.memory.block_size) for _, n in t.llm_nodes())
     assert biggest <= t.memory.num_blocks // 2
     for policy_params in ({"cap": 8}, {"cap": 1}):
@@ -118,11 +132,24 @@ def test_cap_one_serializes(chat_trace):
 @pytest.mark.parametrize("seed", range(4))
 def test_decode_runs_match_single_steps_sweep(tmp_path, seed):
     for blocks in (96, 130, 200):
-        t = build_chat_trace(tmp_path / f"s{seed}-{blocks}.json", jobs=10, seed=seed, num_blocks=blocks,
-                             fanout=seed % 3, gap=0.05 * seed, think=(0.0, 0.5 * seed))
+        t = build_chat_trace(
+            tmp_path / f"s{seed}-{blocks}.json",
+            jobs=10,
+            seed=seed,
+            num_blocks=blocks,
+            fanout=seed % 3,
+            gap=0.05 * seed,
+            think=(0.0, 0.5 * seed),
+        )
         for cap in (3, 8):
             a, _ = replay(t, params={"cap": cap})
             b, _ = replay(t, params={"cap": cap}, macro=False)
             assert a.flows == pytest.approx(b.flows, rel=1e-9), (blocks, cap)
-            for k in ("preemptions", "evictions", "cache_hit_tokens", "recomputed_tokens", "events"):
+            for k in (
+                "preemptions",
+                "evictions",
+                "cache_hit_tokens",
+                "recomputed_tokens",
+                "events",
+            ):
                 assert a.diag[k] == b.diag[k], (blocks, cap, k)

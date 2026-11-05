@@ -52,16 +52,16 @@ class Attempt:
     attempt_id: str
     start: float
     end: float
-    duration: float          # service time: measured for APIs, assigned for local tools
-    status: str              # ok | transient | permanent | cancelled
+    duration: float  # service time: measured for APIs, assigned for local tools
+    status: str  # ok | transient | permanent | cancelled
     error: str | None = None
-    backoff: float = 0.0     # wait after this attempt, before the next
+    backoff: float = 0.0  # wait after this attempt, before the next
 
 
 @dataclass
 class Op:
     op_id: str
-    kind: str                # llm | search | fetch | validate
+    kind: str  # llm | search | fetch | validate
     stage: str
     deps: list[str]
     order: tuple
@@ -69,12 +69,14 @@ class Op:
     start: float = 0.0
     end: float = 0.0
     attempts: list[Attempt] = field(default_factory=list)
-    prompt: list[str] = field(default_factory=list)      # segment ids (llm)
-    output: str | None = None                            # segment id of the frozen output (llm)
-    input_tokens: int = 0                                # as billed by the backend
+    prompt: list[str] = field(default_factory=list)  # segment ids (llm)
+    output: str | None = None  # segment id of the frozen output (llm)
+    input_tokens: int = 0  # as billed by the backend
     output_tokens: int = 0
-    prompt_tokens: int = 0                               # under the frozen local tokenizer
-    block_hashes: list[str] = field(default_factory=list)  # chained hashes of full 256-token blocks
+    prompt_tokens: int = 0  # under the frozen local tokenizer
+    block_hashes: list[str] = field(
+        default_factory=list
+    )  # chained hashes of full 256-token blocks
     model: str | None = None
     slot_requested: float | None = None
     slot_acquired: float | None = None
@@ -94,6 +96,7 @@ class Op:
 @dataclass
 class Recording:
     """Store one report's operations, model outputs, and final validation result."""
+
     report_id: str
     question_id: str
     question: str
@@ -113,13 +116,24 @@ class Recording:
 
     def counts(self) -> dict:
         kinds = [o.kind for o in self.ops]
-        return {"llm_calls": kinds.count("llm"), "searches": kinds.count("search"), "fetches": kinds.count("fetch")}
+        return {
+            "llm_calls": kinds.count("llm"),
+            "searches": kinds.count("search"),
+            "fetches": kinds.count("fetch"),
+        }
 
 
 class Recorder:
     """Collect events and prompt segments for all reports in a run, using one clock."""
 
-    def __init__(self, *, cap: ConcurrencyLimiter, live: bool = True, backend: str = "", meta: dict | None = None):
+    def __init__(
+        self,
+        *,
+        cap: ConcurrencyLimiter,
+        live: bool = True,
+        backend: str = "",
+        meta: dict | None = None,
+    ):
         self.cap = cap
         self.live = live
         self.backend = backend
@@ -131,7 +145,7 @@ class Recorder:
         self._seg_tokens: dict[str, array] = {}
         self.llm_in_flight = 0
         self.llm_peak = 0
-        self.cap_violations = 0   # LLM calls started while in_flight > limit
+        self.cap_violations = 0  # LLM calls started while in_flight > limit
 
     def now(self) -> float:
         return round(time.monotonic() - self.t0, 6)
@@ -152,19 +166,52 @@ class Recorder:
             out.extend(self._seg_tokens[sid])
         return out
 
-    def open_report(self, report_id: str, question: dict, *, arrival: float, snapshot: str, llm: LLM, tools: SearchBackend,
-                    budgets: Budgets = Budgets(), backoff: float = 0.5) -> "TracingClient":
-        rec = Recording(report_id, question["id"], question["question"], arrival, snapshot, start=self.now())
+    def open_report(
+        self,
+        report_id: str,
+        question: dict,
+        *,
+        arrival: float,
+        snapshot: str,
+        llm: LLM,
+        tools: SearchBackend,
+        budgets: Budgets = Budgets(),
+        backoff: float = 0.5,
+    ) -> "TracingClient":
+        rec = Recording(
+            report_id,
+            question["id"],
+            question["question"],
+            arrival,
+            snapshot,
+            start=self.now(),
+        )
         self.recordings[report_id] = rec
-        self.emit("report_start", report_id=report_id, question_id=rec.question_id, question=rec.question,
-                  arrival=arrival, snapshot=snapshot)
+        self.emit(
+            "report_start",
+            report_id=report_id,
+            question_id=rec.question_id,
+            question=rec.question,
+            arrival=arrival,
+            snapshot=snapshot,
+        )
         return TracingClient(self, rec, llm, tools, budgets=budgets, backoff=backoff)
 
     def close_report(self, rec: Recording) -> None:
         rec.end = self.now()
         rec.ops.sort(key=lambda o: o.order)
-        rec.segments = {sid: self.segments[sid] for o in rec.ops for sid in (o.prompt + ([o.output] if o.output else []))}
-        self.emit("report_end", report_id=rec.report_id, valid=rec.valid, errors=rec.errors, **rec.counts())
+        rec.segments = {
+            sid: self.segments[sid]
+            for o in rec.ops
+            for sid in (o.prompt + ([o.output] if o.output else []))
+        }
+        self.emit(
+            "report_end",
+            report_id=rec.report_id,
+            valid=rec.valid,
+            errors=rec.errors,
+            **rec.counts(),
+        )
 
     async def set_cap(self, limit: int) -> None:
         await self.cap.set_limit(limit)
@@ -175,13 +222,32 @@ class Recorder:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w") as f:
-            head = {"event": "run_start", "schema": SCHEMA, "backend": self.backend, "live": self.live,
-                    "cap": self.cap.limit, "llm_peak": self.llm_peak, "cap_violations": self.cap_violations,
-                    "tokenizer": tokenizer.TOKENIZER_NAME, "block_size": BLOCK_SIZE, **self.meta}
+            head = {
+                "event": "run_start",
+                "schema": SCHEMA,
+                "backend": self.backend,
+                "live": self.live,
+                "cap": self.cap.limit,
+                "llm_peak": self.llm_peak,
+                "cap_violations": self.cap_violations,
+                "tokenizer": tokenizer.TOKENIZER_NAME,
+                "block_size": BLOCK_SIZE,
+                **self.meta,
+            }
             f.write(json.dumps(head) + "\n")
             for sid, text in self.segments.items():
-                f.write(json.dumps({"event": "segment", "sid": sid, "n_tokens": len(self._seg_tokens[sid]),
-                                    "text": text}, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "event": "segment",
+                            "sid": sid,
+                            "n_tokens": len(self._seg_tokens[sid]),
+                            "text": text,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             for ev in self.events:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
@@ -193,8 +259,16 @@ class TracingClient:
     The result is None if the operation cannot complete successfully.
     """
 
-    def __init__(self, recorder: Recorder, rec: Recording, llm: LLM, tools: SearchBackend, *,
-                 budgets: Budgets = Budgets(), backoff: float = 0.5):
+    def __init__(
+        self,
+        recorder: Recorder,
+        rec: Recording,
+        llm: LLM,
+        tools: SearchBackend,
+        *,
+        budgets: Budgets = Budgets(),
+        backoff: float = 0.5,
+    ):
         self.r = recorder
         self.rec = rec
         self.llm = llm
@@ -210,15 +284,36 @@ class TracingClient:
     def corpus(self) -> DocumentStore:
         return self.tools.corpus
 
-    def _new_op(self, op_id: str, kind: str, stage: str, deps: list[str], order: tuple) -> Op:
+    def _new_op(
+        self, op_id: str, kind: str, stage: str, deps: list[str], order: tuple
+    ) -> Op:
         if any(o.op_id == op_id for o in self.rec.ops):
             raise ValueError(f"duplicate op id {op_id}")
-        limits = {"llm": self.budgets.llm_calls, "search": self.budgets.searches, "fetch": self.budgets.fetches}
-        if kind in limits and self.rec.counts()[{"llm": "llm_calls", "search": "searches", "fetch": "fetches"}[kind]] >= limits[kind]:
-            raise BudgetExceeded(f"{self.report_id}: {kind} budget of {limits[kind]} exhausted")
+        limits = {
+            "llm": self.budgets.llm_calls,
+            "search": self.budgets.searches,
+            "fetch": self.budgets.fetches,
+        }
+        if (
+            kind in limits
+            and self.rec.counts()[
+                {"llm": "llm_calls", "search": "searches", "fetch": "fetches"}[kind]
+            ]
+            >= limits[kind]
+        ):
+            raise BudgetExceeded(
+                f"{self.report_id}: {kind} budget of {limits[kind]} exhausted"
+            )
         op = Op(op_id, kind, stage, list(deps), order, start=self.r.now())
         self.rec.ops.append(op)
-        self.r.emit("op_start", report_id=self.report_id, op_id=op_id, kind=kind, stage=stage, deps=op.deps)
+        self.r.emit(
+            "op_start",
+            report_id=self.report_id,
+            op_id=op_id,
+            kind=kind,
+            stage=stage,
+            deps=op.deps,
+        )
         return op
 
     def _end_op(self, op: Op, status: str) -> None:
@@ -226,27 +321,65 @@ class TracingClient:
         op.end = self.r.now()
         extra = {}
         if op.kind == "llm":
-            extra = {"prompt": op.prompt, "output": op.output, "input_tokens": op.input_tokens,
-                     "output_tokens": op.output_tokens, "prompt_tokens": op.prompt_tokens,
-                     "block_hashes": op.block_hashes, "model": op.model,
-                     "slot_requested": op.slot_requested, "slot_acquired": op.slot_acquired}
+            extra = {
+                "prompt": op.prompt,
+                "output": op.output,
+                "input_tokens": op.input_tokens,
+                "output_tokens": op.output_tokens,
+                "prompt_tokens": op.prompt_tokens,
+                "block_hashes": op.block_hashes,
+                "model": op.model,
+                "slot_requested": op.slot_requested,
+                "slot_acquired": op.slot_acquired,
+            }
         elif op.kind == "validate":
             extra = {"validation": op.validation}
         else:
             extra = {"args": op.args, "result": op.result}
-        self.r.emit("op_end", report_id=self.report_id, op_id=op.op_id, status=status, attempts=len(op.attempts),
-                    retries=op.retries, **extra)
+        self.r.emit(
+            "op_end",
+            report_id=self.report_id,
+            op_id=op.op_id,
+            status=status,
+            attempts=len(op.attempts),
+            retries=op.retries,
+            **extra,
+        )
 
-    def _attempt(self, op: Op, n: int, start: float, duration: float, status: str, error: str | None = None,
-                 backoff: float = 0.0) -> None:
-        a = Attempt(f"{op.op_id}#a{n}", start, self.r.now(), round(duration, 6), status, error, round(backoff, 6))
+    def _attempt(
+        self,
+        op: Op,
+        n: int,
+        start: float,
+        duration: float,
+        status: str,
+        error: str | None = None,
+        backoff: float = 0.0,
+    ) -> None:
+        a = Attempt(
+            f"{op.op_id}#a{n}",
+            start,
+            self.r.now(),
+            round(duration, 6),
+            status,
+            error,
+            round(backoff, 6),
+        )
         op.attempts.append(a)
         self.r.emit("attempt", report_id=self.report_id, op_id=op.op_id, **asdict(a))
 
     # ------------------------------------------------------------ LLM
 
-    async def llm_call(self, stage: str, messages: list[Msg], *, op_id: str, deps: list[str], order: tuple,
-                       max_tokens: int) -> tuple[LLMResponse | None, Op]:
+    async def llm_call(
+        self,
+        stage: str,
+        messages: list[Msg],
+        *,
+        op_id: str,
+        deps: list[str],
+        order: tuple,
+        max_tokens: int,
+    ) -> tuple[LLMResponse | None, Op]:
         op = self._new_op(op_id, "llm", stage, deps, order)
         op.prompt = [self.r.segment(s) for s in render(messages)]
         tokens = self.r.tokens(op.prompt)
@@ -265,17 +398,27 @@ class TracingClient:
                 for n in range(1, self.budgets.attempts + 1):
                     t, wall = self.r.now(), time.monotonic()
                     try:
-                        resp = await self.llm.complete(messages, max_tokens=max_tokens, stage=stage)
+                        resp = await self.llm.complete(
+                            messages, max_tokens=max_tokens, stage=stage
+                        )
                         self._attempt(op, n, t, time.monotonic() - wall, "ok")
                         status = "ok"
                         break
                     except TransientLLMError as e:
-                        wait = self.backoff * 2 ** (n - 1) if n < self.budgets.attempts else 0.0
-                        self._attempt(op, n, t, time.monotonic() - wall, "transient", str(e), wait)
+                        wait = (
+                            self.backoff * 2 ** (n - 1)
+                            if n < self.budgets.attempts
+                            else 0.0
+                        )
+                        self._attempt(
+                            op, n, t, time.monotonic() - wall, "transient", str(e), wait
+                        )
                         if wait and self.r.live:
-                            await asyncio.sleep(wait)   # the retry keeps this slot
+                            await asyncio.sleep(wait)  # the retry keeps this slot
                     except PermanentLLMError as e:
-                        self._attempt(op, n, t, time.monotonic() - wall, "permanent", str(e))
+                        self._attempt(
+                            op, n, t, time.monotonic() - wall, "permanent", str(e)
+                        )
                         break
             except asyncio.CancelledError:
                 self._attempt(op, len(op.attempts) + 1, op.start, 0.0, "cancelled")
@@ -285,7 +428,11 @@ class TracingClient:
                 self.r.llm_in_flight -= 1
         if resp is not None:
             op.output = self.r.segment(output_text(resp.text))
-            op.input_tokens, op.output_tokens, op.model = resp.input_tokens, resp.output_tokens, resp.model
+            op.input_tokens, op.output_tokens, op.model = (
+                resp.input_tokens,
+                resp.output_tokens,
+                resp.model,
+            )
         self._end_op(op, status)
         return resp, op
 
@@ -325,30 +472,58 @@ class TracingClient:
             raise
         return result, status
 
-    async def search(self, query: str, *, op_id: str, deps: list[str], order: tuple, k: int = 5):
+    async def search(
+        self, query: str, *, op_id: str, deps: list[str], order: tuple, k: int = 5
+    ):
         op = self._new_op(op_id, "search", "search", deps, order)
         op.args = {"query": query, "k": k}
-        hits, status = await self._tool("search", op, lambda n: self.tools.search(query, op_id=op_id, attempt=n, k=k))
+        hits, status = await self._tool(
+            "search",
+            op,
+            lambda n: self.tools.search(query, op_id=op_id, attempt=n, k=k),
+        )
         if hits is not None:
-            op.result = {"hits": [{"doc_id": h.doc_id, "snapshot": h.snapshot, "score": h.score} for h in hits]}
+            op.result = {
+                "hits": [
+                    {"doc_id": h.doc_id, "snapshot": h.snapshot, "score": h.score}
+                    for h in hits
+                ]
+            }
         self._end_op(op, status)
         return hits, op
 
     async def fetch(self, doc_id: str, *, op_id: str, deps: list[str], order: tuple):
         op = self._new_op(op_id, "fetch", "fetch", deps, order)
         op.args = {"doc_id": doc_id}
-        doc, status = await self._tool("fetch", op, lambda n: self.tools.fetch(doc_id, op_id=op_id, attempt=n))
+        doc, status = await self._tool(
+            "fetch", op, lambda n: self.tools.fetch(doc_id, op_id=op_id, attempt=n)
+        )
         if doc is not None:
-            op.result = {"doc_id": doc.doc_id, "snapshot": doc.sha256, "uri": doc.uri, "chars": len(doc.text)}
+            op.result = {
+                "doc_id": doc.doc_id,
+                "snapshot": doc.sha256,
+                "uri": doc.uri,
+                "chars": len(doc.text),
+            }
         self._end_op(op, status)
         return doc, op
 
-    def validate(self, report, *, op_id: str, deps: list[str], order: tuple, snapshot: str | None = None):
+    def validate(
+        self,
+        report,
+        *,
+        op_id: str,
+        deps: list[str],
+        order: tuple,
+        snapshot: str | None = None,
+    ):
         """Run the citation checker as a traced (zero-latency) step."""
         op = self._new_op(op_id, "validate", "validate", deps, order)
         t = self.r.now()
         errors = check_report(report, self.corpus, snapshot=snapshot)
-        self._attempt(op, 1, t, 0.0, "ok")    # local and instant; recorded as zero so replays are deterministic
+        self._attempt(
+            op, 1, t, 0.0, "ok"
+        )  # local and instant; recorded as zero so replays are deterministic
         op.validation = {"valid": not errors, "errors": [str(e) for e in errors]}
         self._end_op(op, "ok")
         return errors, op
@@ -385,8 +560,12 @@ def to_trace_job(rec: Recording, job: JobBuilder) -> dict[str, str]:
         if op.kind == "llm":
             if op.status != "ok" or op.output is None:
                 continue
-            nodes[op.op_id] = job.llm(op.stage, prompt=[rec.segments[s] for s in op.prompt],
-                                      output=rec.segments[op.output], deps=deps)
+            nodes[op.op_id] = job.llm(
+                op.stage,
+                prompt=[rec.segments[s] for s in op.prompt],
+                output=rec.segments[op.output],
+                deps=deps,
+            )
         else:
             nodes[op.op_id] = job.tool(op.stage, op.delay, deps=deps)
     return nodes

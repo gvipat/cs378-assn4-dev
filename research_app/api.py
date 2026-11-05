@@ -39,14 +39,22 @@ class ResearchResult:
         report = self.report
         lines = [f"# {escape(report.title or report.question)}", ""]
         for claim in report.claims:
-            citations = " ".join(f"[{eid}](#{eid.lower()})" for eid in claim.evidence_ids)
+            citations = " ".join(
+                f"[{eid}](#{eid.lower()})" for eid in claim.evidence_ids
+            )
             lines.extend([f"{escape(claim.text)} {citations}", ""])
         lines.extend(["## Sources", ""])
         for evidence in report.evidence:
             doc = self.sources.doc(evidence.doc_id, evidence.snapshot)
-            lines.extend([f'<a id="{evidence.evidence_id.lower()}"></a>',
-                          f"**{evidence.evidence_id}. [{escape(doc.title)}]({doc.uri})**",
-                          "", "> " + escape(evidence.quote).replace("\n", "\n> "), ""])
+            lines.extend(
+                [
+                    f'<a id="{evidence.evidence_id.lower()}"></a>',
+                    f"**{evidence.evidence_id}. [{escape(doc.title)}]({doc.uri})**",
+                    "",
+                    "> " + escape(evidence.quote).replace("\n", "\n> "),
+                    "",
+                ]
+            )
         if not self.valid:
             lines.extend(["## Citation-check errors", "", *self.recording.errors])
         return "\n".join(lines).rstrip() + "\n"
@@ -58,19 +66,37 @@ class ResearchResult:
         self.recorder.export_jsonl(out / "trace.jsonl")
         self.sources.save(out / "sources.json")
         (out / "report.md").write_text(self.markdown())
-        (out / "report.json").write_text(json.dumps(self.report.to_dict() if self.report else None,
-                                                     indent=2, ensure_ascii=False) + "\n")
+        (out / "report.json").write_text(
+            json.dumps(
+                self.report.to_dict() if self.report else None,
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
         rec = self.recording
         calls = [op for op in rec.ops if op.kind == "llm"]
-        summary = {"topic": rec.question, "valid": self.valid, "errors": rec.errors,
-                   "latency": rec.end - rec.arrival, "backend": self.recorder.backend,
-                   "cap": self.recorder.cap.limit, **rec.counts(),
-                   "input_tokens": sum(op.input_tokens for op in calls),
-                   "output_tokens": sum(op.output_tokens for op in calls),
-                   "search_receipts": self.search_receipts, **self.recorder.meta}
+        summary = {
+            "topic": rec.question,
+            "valid": self.valid,
+            "errors": rec.errors,
+            "latency": rec.end - rec.arrival,
+            "backend": self.recorder.backend,
+            "cap": self.recorder.cap.limit,
+            **rec.counts(),
+            "input_tokens": sum(op.input_tokens for op in calls),
+            "output_tokens": sum(op.output_tokens for op in calls),
+            "search_receipts": self.search_receipts,
+            **self.recorder.meta,
+        }
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        builder = TraceBuilder("part1-topic", "P1", "part1", num_blocks=192,
-                               description=f"Research topic: {rec.question}")
+        builder = TraceBuilder(
+            "part1-topic",
+            "P1",
+            "part1",
+            num_blocks=192,
+            description=f"Research topic: {rec.question}",
+        )
         to_trace_job(rec, builder.job(0.0, meta={"question": rec.question_id}))
         builder.save(out / "replay.json")
         return out
@@ -84,25 +110,46 @@ class ResearchAgent:
     research. Concurrent research() calls share this agent's concurrency cap.
     """
 
-    def __init__(self, *, llm: LLM, search: SearchBackend | None = None,
-                 cap: int = 2, settings: AgentSettings | None = None):
+    def __init__(
+        self,
+        *,
+        llm: LLM,
+        search: SearchBackend | None = None,
+        cap: int = 2,
+        settings: AgentSettings | None = None,
+    ):
         self.llm = llm
         self.search = search if search is not None else LocalSearch()
         self.cap = ConcurrencyLimiter(cap)
         self.settings = settings or AgentSettings()
 
-    async def research(self, topic: str, *, out: str | Path | None = None) -> ResearchResult:
+    async def research(
+        self, topic: str, *, out: str | Path | None = None
+    ) -> ResearchResult:
         """Research a question, check citations, and return the report and recorded run."""
         if not isinstance(topic, str) or not topic.strip():
             raise ValueError("topic must be a nonempty research question")
         if out is not None and Path(out).exists():
             raise FileExistsError(f"choose a new run directory: {out}")
         topic = topic.strip()
-        question = {"id": "topic-" + hashlib.sha256(topic.encode()).hexdigest()[:12], "question": topic}
-        recorder = Recorder(cap=self.cap, backend=self.llm.name, meta={"search_backend": self.search.name})
+        question = {
+            "id": "topic-" + hashlib.sha256(topic.encode()).hexdigest()[:12],
+            "question": topic,
+        }
+        recorder = Recorder(
+            cap=self.cap,
+            backend=self.llm.name,
+            meta={"search_backend": self.search.name},
+        )
         snapshot = getattr(self.search.corpus, "snapshot", "web")
-        client = recorder.open_report("R" + uuid.uuid4().hex[:12], question, arrival=0.0, snapshot=snapshot,
-                                      llm=self.llm, tools=self.search)
+        client = recorder.open_report(
+            "R" + uuid.uuid4().hex[:12],
+            question,
+            arrival=0.0,
+            snapshot=snapshot,
+            llm=self.llm,
+            tools=self.search,
+        )
         try:
             await run_report(ReportContext(client, question, self.settings))
         finally:
@@ -114,9 +161,18 @@ class ResearchAgent:
                 version = self.search.corpus.snapshot_of(doc_id, sha)
                 sources.add(self.search.corpus.doc(doc_id, version))
         # Receipts are kept by operation for adapters that expose provider costs.
-        receipts = [r for r in getattr(self.search, "receipts", []) if r["op_id"] in {op.op_id for op in client.rec.ops}]
-        result = ResearchResult(Report.from_dict(client.rec.report) if client.rec.report else None,
-                                client.rec, recorder, sources, receipts)
+        receipts = [
+            r
+            for r in getattr(self.search, "receipts", [])
+            if r["op_id"] in {op.op_id for op in client.rec.ops}
+        ]
+        result = ResearchResult(
+            Report.from_dict(client.rec.report) if client.rec.report else None,
+            client.rec,
+            recorder,
+            sources,
+            receipts,
+        )
         if out is not None:
             result.save(out)
         return result

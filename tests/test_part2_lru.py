@@ -51,8 +51,8 @@ def test_release_does_not_refresh_recency():
     h = CacheHarness(lru(), capacity=2)
     h.allocate("A")
     h.allocate("B")
-    h.release("B")       # B released first...
-    h.release("A")       # ...A released last, but A is still older by access
+    h.release("B")  # B released first...
+    h.release("A")  # ...A released last, but A is still older by access
     h.allocate("C")
     assert h.evicted == ["A"]
 
@@ -74,28 +74,40 @@ def test_access_order_breaks_timestamp_ties():
 
 def test_least_recent_block_still_active_is_skipped():
     h = CacheHarness(lru(), capacity=3)
-    h.allocate("A")      # A stays active: the least recent block, but not a candidate
+    h.allocate("A")  # A stays active: the least recent block, but not a candidate
     h.allocate("B")
     h.release("B")
     h.allocate("C")
     h.release("C")
-    h.allocate("D")      # LRU among the candidates B and C is B
+    h.allocate("D")  # LRU among the candidates B and C is B
     assert h.evicted == ["B"]
 
 
 def test_fixed_cap_and_valid_replay(chat_trace):
     for cap in (1, 4, 8):
-        r = Replay(chat_trace, InProcessClient(LRU, params={"cap": cap}, block_size=16,
-                                               total_blocks=chat_trace.memory.num_blocks),
-                   check_every=1).run()
+        r = Replay(
+            chat_trace,
+            InProcessClient(
+                LRU,
+                params={"cap": cap},
+                block_size=16,
+                total_blocks=chat_trace.memory.num_blocks,
+            ),
+            check_every=1,
+        ).run()
         assert r.valid, r.violation
         assert r.diag["target_concurrency_calls"] > 0
 
 
 def test_lru_under_pressure_in_the_sandbox(pressure_trace):
     m = pressure_trace.memory
-    r = Replay(pressure_trace, WorkerClient(LRU, params={"cap": 8}, block_size=m.block_size,
-                                            total_blocks=m.num_blocks), check_every=1).run()
+    r = Replay(
+        pressure_trace,
+        WorkerClient(
+            LRU, params={"cap": 8}, block_size=m.block_size, total_blocks=m.num_blocks
+        ),
+        check_every=1,
+    ).run()
     assert r.valid, r.violation
     assert r.diag["evictions"] > 0
     assert all(f > 0 for f in r.flows)

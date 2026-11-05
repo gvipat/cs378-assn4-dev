@@ -19,10 +19,16 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
-MAX_CONCURRENCY = 16          # application-wide cap across all replicas
+MAX_CONCURRENCY = 16  # application-wide cap across all replicas
 HOOK_CPU_LIMIT_S = 0.050
 STATE_LIMIT_BYTES = 4 << 20
-OPTIONAL_HOOKS = ("dispatch_order", "admission_order", "choose_preempted", "route_call", "batch_token_budget")
+OPTIONAL_HOOKS = (
+    "dispatch_order",
+    "admission_order",
+    "choose_preempted",
+    "route_call",
+    "batch_token_budget",
+)
 
 
 class Policy:
@@ -38,7 +44,9 @@ class Policy:
         """Return the maximum number of dispatched, unfinished calls, from 1 to MAX_CONCURRENCY."""
         raise NotImplementedError
 
-    def choose_victim(self, view: "View", candidates: Sequence[str], state: "State") -> str:
+    def choose_victim(
+        self, view: "View", candidates: Sequence[str], state: "State"
+    ) -> str:
         """Return the id of a cached block to evict from candidates.
 
         All candidates have zero active references and are listed by release time,
@@ -46,7 +54,9 @@ class Policy:
         """
         raise NotImplementedError
 
-    def dispatch_order(self, view: "View", ready: Sequence[str], state: "State") -> list[str]:
+    def dispatch_order(
+        self, view: "View", ready: Sequence[str], state: "State"
+    ) -> list[str]:
         """Return ready call ids in the order they should be dispatched.
 
         The default uses the given order, oldest first. You may return a subset;
@@ -54,7 +64,9 @@ class Policy:
         """
         return list(ready)
 
-    def admission_order(self, view: "View", waiting: Sequence[str], state: "State") -> list[str]:
+    def admission_order(
+        self, view: "View", waiting: Sequence[str], state: "State"
+    ) -> list[str]:
         """Return a permutation of the waiting calls in admission order.
 
         The default is first come, first served. Calls whose chunked prefill has
@@ -62,7 +74,9 @@ class Policy:
         """
         return list(waiting)
 
-    def choose_preempted(self, view: "View", running: Sequence[str], state: "State") -> str:
+    def choose_preempted(
+        self, view: "View", running: Sequence[str], state: "State"
+    ) -> str:
         """Return the running call that should release its blocks when memory runs out.
 
         Running calls are listed in scheduling order. The default preempts the
@@ -90,8 +104,11 @@ class Policy:
 def overridden_hooks(policy: Policy) -> tuple[str, ...]:
     """The optional hooks this policy defines itself. The engine applies the
     default rule for the others without calling the policy."""
-    return tuple(h for h in OPTIONAL_HOOKS
-                 if getattr(getattr(policy, h), "__func__", None) is not getattr(Policy, h))
+    return tuple(
+        h
+        for h in OPTIONAL_HOOKS
+        if getattr(getattr(policy, h), "__func__", None) is not getattr(Policy, h)
+    )
 
 
 class State(dict):
@@ -123,8 +140,16 @@ EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     # the engine preempted the call; it will be recomputed
     "preempt": ("call",),
     # an LLM call finished
-    "complete": ("call", "job", "stage", "input_tokens", "output_tokens", "cached_tokens",
-                 "queue_time", "latency"),
+    "complete": (
+        "call",
+        "job",
+        "stage",
+        "input_tokens",
+        "output_tokens",
+        "cached_tokens",
+        "queue_time",
+        "latency",
+    ),
     # a tool or think-time step started / finished (durations are not known in advance)
     "tool_start": ("job", "stage"),
     "tool_done": ("job", "stage"),
@@ -166,27 +191,31 @@ class Block:
     identifies its contents and all preceding tokens (as in vLLM's prefix
     caching), so duplicate copies share a hash but have different ids.
     """
+
     id: str
     parent_hash: str | None  # block_hash of the preceding block (may not be resident)
-    depth: int              # 0 for the first block of a prompt
-    ref_cnt: int            # active references; 0 means it is a victim candidate
-    hits: int = 0           # times matched since it became resident
+    depth: int  # 0 for the first block of a prompt
+    ref_cnt: int  # active references; 0 means it is a victim candidate
+    hits: int = 0  # times matched since it became resident
     created: float = 0.0
-    last_access: float = 0.0   # last alloc or hit (releases do not count)
-    stage: str = ""         # stage of the call that computed it
-    job: str = ""           # job of the call that computed it
-    block_hash: str = ""    # content identity; duplicates can occupy different slots
+    last_access: float = 0.0  # last alloc or hit (releases do not count)
+    stage: str = ""  # stage of the call that computed it
+    job: str = ""  # job of the call that computed it
+    block_hash: str = ""  # content identity; duplicates can occupy different slots
     replica: int = 0
 
 
 @dataclass(slots=True)
 class Call:
     """An LLM call that is ready or in flight."""
+
     id: str
     job: str
     stage: str
     input_tokens: int
-    block_hashes: tuple[str, ...]  # block_hash of each full block of the prompt, root first
+    block_hashes: tuple[
+        str, ...
+    ]  # block_hash of each full block of the prompt, root first
     ready_at: float
     dispatched_at: float | None = None
     admitted_at: float | None = None
@@ -196,6 +225,7 @@ class Call:
 @dataclass(frozen=True, slots=True)
 class ReplicaView:
     """Current queue and memory counts for one GPU replica."""
+
     id: int
     total_blocks: int
     empty_blocks: int
@@ -220,16 +250,17 @@ class JobInfo:
 @dataclass
 class View:
     """A read-only snapshot passed to the decision hooks."""
+
     now: float
     block_size: int
     total_blocks: int
-    empty_blocks: int        # blocks holding nothing reusable
-    active_blocks: int       # blocks with references (includes partial blocks)
-    cached_blocks: int       # resident zero-reference prefix blocks (== len(candidates))
-    waiting: int             # not admitted, or returned to waiting after preemption
-    running: int             # admitted calls, including unfinished chunked prefill
-    ready: Mapping[str, Call]    # ready, not dispatched, oldest first
-    calls: Mapping[str, Call]    # in flight (dispatched, not complete)
+    empty_blocks: int  # blocks holding nothing reusable
+    active_blocks: int  # blocks with references (includes partial blocks)
+    cached_blocks: int  # resident zero-reference prefix blocks (== len(candidates))
+    waiting: int  # not admitted, or returned to waiting after preemption
+    running: int  # admitted calls, including unfinished chunked prefill
+    ready: Mapping[str, Call]  # ready, not dispatched, oldest first
+    calls: Mapping[str, Call]  # in flight (dispatched, not complete)
     blocks: Mapping[str, Block]  # resident prefix blocks
     jobs: Mapping[str, JobInfo]  # arrived, not done
     rng: random.Random = field(repr=False, default_factory=random.Random)

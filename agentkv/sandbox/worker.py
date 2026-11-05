@@ -15,13 +15,35 @@ import os
 import sys
 
 # Preload common modules so their initialization is outside the policy hook CPU budget.
-PRELOAD = ("math", "heapq", "bisect", "collections", "itertools", "functools", "statistics",
-           "random", "dataclasses", "typing", "enum", "operator", "copy", "numbers", "array",
-           "fractions", "decimal", "re", "string", "abc", "inspect", "pickle")
+PRELOAD = (
+    "math",
+    "heapq",
+    "bisect",
+    "collections",
+    "itertools",
+    "functools",
+    "statistics",
+    "random",
+    "dataclasses",
+    "typing",
+    "enum",
+    "operator",
+    "copy",
+    "numbers",
+    "array",
+    "fractions",
+    "decimal",
+    "re",
+    "string",
+    "abc",
+    "inspect",
+    "pickle",
+)
 
 
 def _preload() -> None:
     import importlib
+
     for name in PRELOAD:
         importlib.import_module(name)
     try:
@@ -46,7 +68,7 @@ class _Lines:
 
 def main() -> None:
     rfd, wfd = os.dup(0), os.dup(1)
-    os.dup2(2, 1)           # print() in a policy goes to stderr, not the protocol
+    os.dup2(2, 1)  # print() in a policy goes to stderr, not the protocol
     sys.stdout = sys.stderr
     lines = _Lines(rfd)
 
@@ -74,6 +96,7 @@ def main() -> None:
     restricted = False
     if os.environ.get("AGENTKV_SANDBOX_SECCOMP") == "1":
         from .linux import restrict
+
         if os.geteuid() == 0:
             raise RuntimeError("The policy worker must run as an unprivileged user.")
         restrict()
@@ -82,11 +105,19 @@ def main() -> None:
         guard.limit_resources()
         guard.install()
     try:
-        policy = instantiate(load_policy_class(source, init["policy_path"]), init.get("params"))
-        rt = PolicyRuntime(policy, block_size=init["block_size"], total_blocks=init["total_blocks"],
-                           seed=init["seed"])
+        policy = instantiate(
+            load_policy_class(source, init["policy_path"]), init.get("params")
+        )
+        rt = PolicyRuntime(
+            policy,
+            block_size=init["block_size"],
+            total_blocks=init["total_blocks"],
+            seed=init["seed"],
+        )
     except PolicyError as exc:
-        send({"err": "sandbox" if guard.violations else exc.category, "msg": exc.detail})
+        send(
+            {"err": "sandbox" if guard.violations else exc.category, "msg": exc.detail}
+        )
         return
     send({"ok": "ready", "hooks": list(rt.hooks), "restricted": restricted})
 
@@ -101,11 +132,17 @@ def main() -> None:
             if op == "tc":
                 out = rt.target_concurrency(msg["h"])
                 if not isinstance(out, int) or isinstance(out, bool):
-                    raise PolicyError("invalid", f"target_concurrency returned {type(out).__name__}, not int")
+                    raise PolicyError(
+                        "invalid",
+                        f"target_concurrency returned {type(out).__name__}, not int",
+                    )
             elif op == "cv":
                 out = rt.choose_victim(msg["h"], msg.get("a"))
                 if not isinstance(out, str):
-                    raise PolicyError("invalid", f"choose_victim returned {type(out).__name__}, not str")
+                    raise PolicyError(
+                        "invalid",
+                        f"choose_victim returned {type(out).__name__}, not str",
+                    )
             elif op == "do":
                 out = rt.dispatch_order(msg["h"], msg["a"])
             elif op == "ao":
@@ -125,9 +162,16 @@ def main() -> None:
                 raise PolicyError("sandbox", guard.violations[0])
         except PolicyError as exc:
             cat = "sandbox" if guard.violations else exc.category
-            send({"err": cat, "msg": guard.violations[0] if guard.violations else exc.detail})
+            send(
+                {
+                    "err": cat,
+                    "msg": guard.violations[0] if guard.violations else exc.detail,
+                }
+            )
             return
-        except Exception as exc:   # a bug in the runtime itself, or a broken event stream
+        except (
+            Exception
+        ) as exc:  # a bug in the runtime itself, or a broken event stream
             send({"err": "internal", "msg": f"{type(exc).__name__}: {exc}"})
             return
         send({"ok": out, "cpu": rt.cpu})

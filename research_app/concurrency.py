@@ -29,9 +29,9 @@ class ConcurrencyLimiter:
         self._limit = limit
         self._in_flight = 0
         self._cond = asyncio.Condition()
-        self.peak = 0           # most slots ever held at once
-        self.over_limit = 0     # grants made while in_flight >= limit (must stay 0)
-        self.grants = 0         # operations granted a slot; retries keep the same slot
+        self.peak = 0  # most slots ever held at once
+        self.over_limit = 0  # grants made while in_flight >= limit (must stay 0)
+        self.grants = 0  # operations granted a slot; retries keep the same slot
 
     @property
     def limit(self) -> int:

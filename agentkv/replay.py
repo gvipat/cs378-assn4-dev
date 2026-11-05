@@ -108,19 +108,40 @@ class RunResult:
         return sum(self.flows) / len(self.flows) if self.flows else math.inf
 
 
-def run_policy(trace: Trace, policy_path: str, *, params: dict | None = None, seed: int = 0,
-               isolate: bool = True, timing: TimingModel | None = None, engine=None) -> RunResult:
+def run_policy(
+    trace: Trace,
+    policy_path: str,
+    *,
+    params: dict | None = None,
+    seed: int = 0,
+    isolate: bool = True,
+    timing: TimingModel | None = None,
+    engine=None,
+) -> RunResult:
     """Start the policy (sandboxed unless isolate=False) and replay the trace.
     A policy that fails to load yields an invalid run, like any other violation."""
     from .sandbox.client import InProcessClient, WorkerClient
 
-    kw = dict(params=params, seed=seed, block_size=trace.memory.block_size,
-              total_blocks=trace.memory.num_blocks)
+    kw = dict(
+        params=params,
+        seed=seed,
+        block_size=trace.memory.block_size,
+        total_blocks=trace.memory.num_blocks,
+    )
     try:
-        client = WorkerClient(policy_path, **kw) if isolate else InProcessClient(policy_path, **kw)
+        client = (
+            WorkerClient(policy_path, **kw)
+            if isolate
+            else InProcessClient(policy_path, **kw)
+        )
     except PolicyError as exc:
-        return RunResult(trace.trace_id, trace.family, [math.inf] * len(trace.jobs),
-                         f"{exc.category}: {exc.detail}" if exc.detail else exc.category, {})
+        return RunResult(
+            trace.trace_id,
+            trace.family,
+            [math.inf] * len(trace.jobs),
+            f"{exc.category}: {exc.detail}" if exc.detail else exc.category,
+            {},
+        )
     return Replay(trace, client, seed=seed, timing=timing, engine=engine).run()
 
 
@@ -139,7 +160,10 @@ class _PolicyHooks(SchedulingHooks):
         by_pid = {s.owner.pid: s for s in waiting}
         order = self.r.client.admission_order(self.r._hdr(), list(by_pid))
         if sorted(order) != sorted(by_pid):
-            raise PolicyError("invalid", "admission_order must return every waiting call id exactly once")
+            raise PolicyError(
+                "invalid",
+                "admission_order must return every waiting call id exactly once",
+            )
         return [by_pid[pid] for pid in order]
 
     def choose_preempted(self, running: list[Seq]) -> Seq:
@@ -148,34 +172,60 @@ class _PolicyHooks(SchedulingHooks):
         by_pid = {s.owner.pid: s for s in running}
         pid = self.r.client.choose_preempted(self.r._hdr(), list(by_pid))
         if pid not in by_pid:
-            raise PolicyError("invalid", f"choose_preempted returned {pid!r}, which is not a running call")
+            raise PolicyError(
+                "invalid",
+                f"choose_preempted returned {pid!r}, which is not a running call",
+            )
         return by_pid[pid]
 
 
 class Replay:
 
-    def __init__(self, trace: Trace, client, *, seed: int = 0, timing: TimingModel | None = None,
-                 engine=None, verify: bool = False, check_every: int = 0):
+    def __init__(
+        self,
+        trace: Trace,
+        client,
+        *,
+        seed: int = 0,
+        timing: TimingModel | None = None,
+        engine=None,
+        verify: bool = False,
+        check_every: int = 0,
+    ):
         self.trace = trace
         self.client = client
         self.timing = timing or TimingModel.load()
-        self.rekey = Rekey(hashlib.blake2b(f"{trace.sha256}:{seed}".encode(), digest_size=16).digest())
+        self.rekey = Rekey(
+            hashlib.blake2b(f"{trace.sha256}:{seed}".encode(), digest_size=16).digest()
+        )
         self.check_every = check_every
         self.verify = verify
         hooks = _PolicyHooks(self)
         if engine is None:
-            engine = SimEngine(trace.memory, trace.engine, timing=self.timing, choose_victim=self._victim,
-                               emit_block=self._emit_block, on_call=self._on_call, hooks=hooks, verify=verify)
+            engine = SimEngine(
+                trace.memory,
+                trace.engine,
+                timing=self.timing,
+                choose_victim=self._victim,
+                emit_block=self._emit_block,
+                on_call=self._on_call,
+                hooks=hooks,
+                verify=verify,
+            )
         else:
-            engine.attach(choose_victim=self._victim, emit_block=self._emit_block, on_call=self._on_call,
-                          hooks=hooks)
+            engine.attach(
+                choose_victim=self._victim,
+                emit_block=self._emit_block,
+                on_call=self._on_call,
+                hooks=hooks,
+            )
         self.engine = engine
         self.kv = engine.kv
         self.sched = engine.sched
         self.realtime = getattr(engine, "realtime", False)
         self.needs_tokens = verify or getattr(engine, "needs_tokens", False)
         self.now = 0.0
-        self.t = 0.0                    # timestamp for events being emitted
+        self.t = 0.0  # timestamp for events being emitted
         self.heap: list = []
         self._tie = 0
         self.ready: OrderedDict[str, _Call] = OrderedDict()
@@ -204,8 +254,13 @@ class Replay:
         finally:
             self.client.close()
         flows = [self.flows.get(j.id, math.inf) for j in self.trace.jobs]
-        return RunResult(self.trace.trace_id, self.trace.family, flows, violation,
-                         self._diag(stats, time.perf_counter() - t0, flows))
+        return RunResult(
+            self.trace.trace_id,
+            self.trace.family,
+            flows,
+            violation,
+            self._diag(stats, time.perf_counter() - t0, flows),
+        )
 
     def _loop(self) -> None:
         n_jobs = len(self.trace.jobs)
@@ -232,24 +287,33 @@ class Replay:
                 if self.realtime:
                     self.engine.wait_until(self.now)
             elif self.ready:
-                raise PolicyError("invalid", "dispatch_order held back every ready call while nothing "
-                                             "else could make progress")
+                raise PolicyError(
+                    "invalid",
+                    "dispatch_order held back every ready call while nothing "
+                    "else could make progress",
+                )
             else:
-                raise EngineError("replay stalled: no engine work and no pending events")
+                raise EngineError(
+                    "replay stalled: no engine work and no pending events"
+                )
 
     def _push(self, t: float, kind: int, payload) -> None:
         self._tie += 1
         heapq.heappush(self.heap, (t, self._tie, kind, payload))
 
     def _process_external(self, limit: float, *, inclusive: bool) -> None:
-        while self.heap and (self.heap[0][0] <= limit if inclusive else self.heap[0][0] < limit):
+        while self.heap and (
+            self.heap[0][0] <= limit if inclusive else self.heap[0][0] < limit
+        ):
             t, _, kind, payload = heapq.heappop(self.heap)
             self.t = t
             if kind == _ARRIVAL:
                 self._arrive(payload)
             else:
                 jr, node = payload
-                self.client.event(("tool_done", t, jr.pid, self.rekey.stage(node.stage)))
+                self.client.event(
+                    ("tool_done", t, jr.pid, self.rekey.stage(node.stage))
+                )
                 self._node_done(jr, node.id)
             self._dispatch()
 
@@ -276,9 +340,18 @@ class Replay:
             self._push(self.t + node.delay, _TOOL_DONE, (jr, node))
             return
         bs = self.trace.memory.block_size
-        call = _Call(f"{jr.job.id}/{node.id}", self.rekey.call(jr.job.id, node.id), jr, node, stage, self.t)
-        prefix = [self.rekey.block(h) for h in node.hashes[:node.n_prompt // bs]]
-        self.client.event(("ready", self.t, call.pid, jr.pid, stage, node.n_prompt, prefix))
+        call = _Call(
+            f"{jr.job.id}/{node.id}",
+            self.rekey.call(jr.job.id, node.id),
+            jr,
+            node,
+            stage,
+            self.t,
+        )
+        prefix = [self.rekey.block(h) for h in node.hashes[: node.n_prompt // bs]]
+        self.client.event(
+            ("ready", self.t, call.pid, jr.pid, stage, node.n_prompt, prefix)
+        )
         self.ready[call.key] = call
 
     def _node_done(self, jr: _Job, node_id: str) -> None:
@@ -297,20 +370,35 @@ class Replay:
     # ------------------------------------------------------------ dispatch
 
     def _hdr(self) -> list:
-        return [self.t, len(self.kv.empty), self.kv.num_active, len(self.sched.waiting), len(self.sched.running)]
+        return [
+            self.t,
+            len(self.kv.empty),
+            self.kv.num_active,
+            len(self.sched.waiting),
+            len(self.sched.running),
+        ]
 
     def _dispatch(self) -> None:
         if not self.ready or len(self.inflight) >= MAX_CONCURRENCY:
             return
         self.tc_calls += 1
         cap = self.client.target_concurrency(self._hdr())
-        if not isinstance(cap, int) or isinstance(cap, bool) or not 1 <= cap <= MAX_CONCURRENCY:
-            raise PolicyError("invalid", f"target_concurrency returned {cap!r}; it must be an int in 1..{MAX_CONCURRENCY}")
+        if (
+            not isinstance(cap, int)
+            or isinstance(cap, bool)
+            or not 1 <= cap <= MAX_CONCURRENCY
+        ):
+            raise PolicyError(
+                "invalid",
+                f"target_concurrency returned {cap!r}; it must be an int in 1..{MAX_CONCURRENCY}",
+            )
         if "dispatch_order" in getattr(self.client, "hooks", ()):
             by_pid = {c.pid: k for k, c in self.ready.items()}
             order = self.client.dispatch_order(self._hdr(), list(by_pid))
             if len(set(order)) != len(order) or not set(order) <= set(by_pid):
-                raise PolicyError("invalid", "dispatch_order must return distinct ids of ready calls")
+                raise PolicyError(
+                    "invalid", "dispatch_order must return distinct ids of ready calls"
+                )
             keys = [by_pid[pid] for pid in order]
         else:
             keys = list(self.ready)
@@ -322,7 +410,9 @@ class Replay:
             self.client.event(("dispatch", self.t, call.pid))
             node = call.node
             tokens = self.trace.tokens(node) if self.needs_tokens else None
-            seq = Seq(node.n_prompt, node.n_output, node.hashes, tokens=tokens, owner=call)
+            seq = Seq(
+                node.n_prompt, node.n_output, node.hashes, tokens=tokens, owner=call
+            )
             self.inflight[seq.seq_id] = call
             self.engine.add(seq)
 
@@ -330,9 +420,23 @@ class Replay:
         call = self.inflight.pop(seq.seq_id)
         call.done_at = self.t
         node = call.node
-        queue = (call.admitted_at if call.admitted_at is not None else self.t) - call.dispatched_at
-        self.client.event(("complete", self.t, call.pid, call.job.pid, call.stage, node.n_prompt, node.n_output,
-                           seq.first_cached_tokens or 0, queue, self.t - call.dispatched_at))
+        queue = (
+            call.admitted_at if call.admitted_at is not None else self.t
+        ) - call.dispatched_at
+        self.client.event(
+            (
+                "complete",
+                self.t,
+                call.pid,
+                call.job.pid,
+                call.stage,
+                node.n_prompt,
+                node.n_output,
+                seq.first_cached_tokens or 0,
+                queue,
+                self.t - call.dispatched_at,
+            )
+        )
         self._node_done(call.job, node.id)
 
     # ------------------------------------------------------------ engine callbacks
@@ -342,7 +446,9 @@ class Replay:
         if kind == "hit":
             self.client.event(("hit", self.t, rk(h), seq.owner.pid))
         elif kind == "alloc":
-            self.client.event(("alloc", self.t, rk(h), rk(kw["parent"]), kw["depth"], seq.owner.pid))
+            self.client.event(
+                ("alloc", self.t, rk(h), rk(kw["parent"]), kw["depth"], seq.owner.pid)
+            )
         elif kind == "release":
             self.client.event(("release", self.t, rk(h), seq.owner.pid, kw["refs"]))
         elif kind == "evict":
@@ -364,7 +470,10 @@ class Replay:
         h = self.rekey.unblock(pid)
         bid = self.kv.prefix_map.get(h) if h is not None else None
         if bid is None or bid not in cached:
-            raise PolicyError("invalid", f"choose_victim returned {pid!r}, which is not one of the candidates")
+            raise PolicyError(
+                "invalid",
+                f"choose_victim returned {pid!r}, which is not one of the candidates",
+            )
         return bid
 
     # ------------------------------------------------------------ diagnostics
@@ -381,8 +490,11 @@ class Replay:
                 if isinstance(n, ToolNode):
                     cost = n.delay
                 else:
-                    cost = self.timing.prefill([(0, n.n_prompt)]) + \
-                        self.timing.decode_run(1, n.n_prompt + 1, max(n.n_output - 1, 0))
+                    cost = self.timing.prefill(
+                        [(0, n.n_prompt)]
+                    ) + self.timing.decode_run(
+                        1, n.n_prompt + 1, max(n.n_output - 1, 0)
+                    )
                 finish[nid] = start + cost
             return finish[nid]
 
@@ -392,17 +504,26 @@ class Replay:
         done = sorted(x for x in flows if math.isfinite(x))
         ideal = [self._ideal_flow(j) for j in self.trace.jobs]
         prompt = sum(n.n_prompt for _, n in self.trace.llm_nodes())
-        p95 = done[min(len(done) - 1, math.ceil(0.95 * len(done)) - 1)] if done else math.inf
+        p95 = (
+            done[min(len(done) - 1, math.ceil(0.95 * len(done)) - 1)]
+            if done
+            else math.inf
+        )
         ends = [jr.done_at for jr in self.jobs.values() if jr.done_at is not None]
         return {
             "mean_flow": sum(done) / len(done) if len(done) == len(flows) else math.inf,
             "p95_flow": p95,
-            "makespan": (max(ends) - min(j.arrival for j in self.trace.jobs)) if ends else math.inf,
+            "makespan": (
+                (max(ends) - min(j.arrival for j in self.trace.jobs))
+                if ends
+                else math.inf
+            ),
             "mean_ideal_flow": sum(ideal) / len(ideal),
             "prompt_tokens": prompt,
             "cache_hit_tokens": self.cache_hit_tokens,
             "prefill_tokens": self.engine.prefill_tokens,
-            "recomputed_tokens": self.kv.recomputed_blocks * self.trace.memory.block_size,
+            "recomputed_tokens": self.kv.recomputed_blocks
+            * self.trace.memory.block_size,
             "preemptions": self.sched.preemptions,
             "evictions": self.kv.evictions,
             "prefill_steps": self.engine.prefill_steps,

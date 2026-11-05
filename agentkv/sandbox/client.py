@@ -26,10 +26,14 @@ class InProcessClient:
 
     def __init__(self, policy, *, params=None, seed=0, block_size, total_blocks):
         if isinstance(policy, (str, Path)):
-            policy = instantiate(load_policy_class(Path(policy).read_text(), str(policy)), params)
+            policy = instantiate(
+                load_policy_class(Path(policy).read_text(), str(policy)), params
+            )
         elif isinstance(policy, type):
             policy = instantiate(policy, params)
-        self.rt = PolicyRuntime(policy, block_size=block_size, total_blocks=total_blocks, seed=seed)
+        self.rt = PolicyRuntime(
+            policy, block_size=block_size, total_blocks=total_blocks, seed=seed
+        )
         self.hooks = self.rt.hooks
         self.pending: list = []
 
@@ -84,33 +88,69 @@ class InProcessClient:
 class WorkerClient:
     """A policy in its own sandboxed process."""
 
-    def __init__(self, policy_path: str | Path, *, params=None, seed=0, block_size, total_blocks,
-                 sandbox: bool = True, stderr=None, start_timeout: float = 60.0):
+    def __init__(
+        self,
+        policy_path: str | Path,
+        *,
+        params=None,
+        seed=0,
+        block_size,
+        total_blocks,
+        sandbox: bool = True,
+        stderr=None,
+        start_timeout: float = 60.0,
+    ):
         self.tmp = tempfile.mkdtemp(prefix="agentkv-worker-")
-        env = {"PATH": os.environ.get("PATH", ""), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1",
-               "PYTHONPATH": PACKAGE_PARENT, "HOME": self.tmp,
-               # A preloaded numpy would otherwise size OpenBLAS's buffers for every
-               # core, which overruns the address-space limit on many-core machines.
-               "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONHASHSEED": "0",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": PACKAGE_PARENT,
+            "HOME": self.tmp,
+            # A preloaded numpy would otherwise size OpenBLAS's buffers for every
+            # core, which overruns the address-space limit on many-core machines.
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        }
         if os.environ.get("AGENTKV_SANDBOX_USER"):
             env["AGENTKV_SANDBOX_USER"] = os.environ["AGENTKV_SANDBOX_USER"]
         if os.environ.get("AGENTKV_SANDBOX_SECCOMP"):
             env["AGENTKV_SANDBOX_SECCOMP"] = os.environ["AGENTKV_SANDBOX_SECCOMP"]
-        self.proc = subprocess.Popen([sys.executable, "-s", "-m", "agentkv.sandbox.worker"],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
-                                     cwd=self.tmp, env=env)
+        self.proc = subprocess.Popen(
+            [sys.executable, "-s", "-m", "agentkv.sandbox.worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            cwd=self.tmp,
+            env=env,
+        )
         self.fd = self.proc.stdout.fileno()
         self.buf = b""
         self.pending: list = []
         self.cpu = 0.0
-        self._send({"op": "init", "policy_path": str(Path(policy_path).resolve()), "params": params,
-                    "seed": seed, "block_size": block_size, "total_blocks": total_blocks,
-                    "sandbox": sandbox})
+        self._send(
+            {
+                "op": "init",
+                "policy_path": str(Path(policy_path).resolve()),
+                "params": params,
+                "seed": seed,
+                "block_size": block_size,
+                "total_blocks": total_blocks,
+                "sandbox": sandbox,
+            }
+        )
         self._recv(start_timeout)
-        if env.get("AGENTKV_SANDBOX_SECCOMP") == "1" and not self.last.get("restricted"):
+        if env.get("AGENTKV_SANDBOX_SECCOMP") == "1" and not self.last.get(
+            "restricted"
+        ):
             self.close()
-            raise RuntimeError("The policy worker did not activate its Linux restrictions.")
-        self.hooks = tuple(self.last.get("hooks") or ())    # optional hooks the policy defines
+            raise RuntimeError(
+                "The policy worker did not activate its Linux restrictions."
+            )
+        self.hooks = tuple(
+            self.last.get("hooks") or ()
+        )  # optional hooks the policy defines
 
     def event(self, ev: tuple) -> None:
         self.pending.append(ev)
@@ -147,7 +187,9 @@ class WorkerClient:
 
     def _send(self, obj) -> None:
         try:
-            self.proc.stdin.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+            self.proc.stdin.write(
+                (json.dumps(obj, separators=(",", ":")) + "\n").encode()
+            )
             self.proc.stdin.flush()
         except (BrokenPipeError, OSError):
             raise PolicyError("crash", "policy worker exited") from None
@@ -159,7 +201,9 @@ class WorkerClient:
             ready, _, _ = select.select([self.fd], [], [], remaining)
             if not ready or remaining == 0:
                 self.close()
-                raise PolicyError("timeout", f"no answer from the policy within {timeout:.1f} s")
+                raise PolicyError(
+                    "timeout", f"no answer from the policy within {timeout:.1f} s"
+                )
             chunk = os.read(self.fd, 1 << 16)
             if not chunk:
                 code = self.proc.wait()
@@ -172,7 +216,9 @@ class WorkerClient:
         try:
             msg = json.loads(line)
         except ValueError:
-            raise PolicyError("crash", "malformed reply from the policy worker") from None
+            raise PolicyError(
+                "crash", "malformed reply from the policy worker"
+            ) from None
         if not isinstance(msg, dict):
             raise PolicyError("crash", "malformed reply from the policy worker")
         if "err" in msg:

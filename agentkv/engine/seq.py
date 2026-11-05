@@ -18,8 +18,14 @@ class Seq:
     block_size = 256
     _ids = count()
 
-    def __init__(self, num_prompt_tokens: int, max_tokens: int, hashes: tuple[int, ...],
-                 tokens: array | None = None, owner=None):
+    def __init__(
+        self,
+        num_prompt_tokens: int,
+        max_tokens: int,
+        hashes: tuple[int, ...],
+        tokens: array | None = None,
+        owner=None,
+    ):
         assert num_prompt_tokens >= 1 and max_tokens >= 1
         self.seq_id = next(Seq._ids)
         self.status = SeqStatus.WAITING
@@ -79,7 +85,7 @@ class Seq:
         if self.tokens is None:
             return None
         bs = self.block_size
-        return tuple(self.tokens[i * bs:min((i + 1) * bs, self.num_tokens)])
+        return tuple(self.tokens[i * bs : min((i + 1) * bs, self.num_tokens)])
 
     def append_token(self) -> None:
         """Advance by one generated token. Outputs are frozen, so the token id is

@@ -11,7 +11,9 @@ from agentkv.sandbox.client import InProcessClient
 from agentkv.trace import HEADER, TraceBuilder, load, output_text
 
 # prefill: 0.01 s per new token; decode: 0.1 s per step; nothing else costs time
-T = TimingModel(p_base=0.0, p_token=0.01, p_attn=0.0, d_base=0.1, d_seq=0.0, d_ctx=0.0, name="toy")
+T = TimingModel(
+    p_base=0.0, p_token=0.01, p_attn=0.0, d_base=0.1, d_seq=0.0, d_ctx=0.0, name="toy"
+)
 
 POLICY = """
 from agentkv.policy import Policy
@@ -36,7 +38,9 @@ def run(tmp_path, build, cap=8, num_blocks=64):
     t = load(path)
     pol = tmp_path / "p.py"
     pol.write_text(POLICY)
-    c = InProcessClient(str(pol), params={"cap": cap}, block_size=16, total_blocks=num_blocks)
+    c = InProcessClient(
+        str(pol), params={"cap": cap}, block_size=16, total_blocks=num_blocks
+    )
     return t, Replay(t, c, timing=T).run()
 
 
@@ -47,6 +51,7 @@ def tokens(t, sid):
 def test_single_call(tmp_path):
     def build(b):
         b.job(0.0).llm("x", [words(100, "a")], words(5, "b"))
+
     t, r = run(tmp_path, build)
     n = next(n for _, n in t.llm_nodes())
     # prefill computes the prompt and yields token 1; then n_output - 1 decode steps
@@ -58,6 +63,7 @@ def test_tool_then_call(tmp_path):
         j = b.job(1.0)
         x = j.tool("search", 2.0)
         j.llm("x", [words(100, "a")], words(5, "b"), deps=[x])
+
     t, r = run(tmp_path, build)
     n = next(n for _, n in t.llm_nodes())
     assert r.flows[0] == pytest.approx(2.0 + 0.01 * n.n_prompt + 0.1 * (n.n_output - 1))
@@ -68,29 +74,42 @@ def test_overlap_and_queueing(tmp_path):
         j = b.job(0.0)
         j.llm("x", [words(100, "a")], words(5, "b"))
         j.llm("x", [words(100, "c")], words(5, "d"))
+
     t, par = run(tmp_path, build, cap=2)
     (_, n1), (_, n2) = list(t.llm_nodes())
     # cap 2: one prefill step for both prompts, then shared decode steps
-    assert par.flows[0] == pytest.approx(0.01 * (n1.n_prompt + n2.n_prompt) + 0.1 * (max(n1.n_output, n2.n_output) - 1))
+    assert par.flows[0] == pytest.approx(
+        0.01 * (n1.n_prompt + n2.n_prompt) + 0.1 * (max(n1.n_output, n2.n_output) - 1)
+    )
     _, ser = run(tmp_path, build, cap=1)
     # cap 1: the second call queues behind the first
-    assert ser.flows[0] == pytest.approx(0.01 * n1.n_prompt + 0.1 * (n1.n_output - 1)
-                                         + 0.01 * n2.n_prompt + 0.1 * (n2.n_output - 1))
+    assert ser.flows[0] == pytest.approx(
+        0.01 * n1.n_prompt
+        + 0.1 * (n1.n_output - 1)
+        + 0.01 * n2.n_prompt
+        + 0.1 * (n2.n_output - 1)
+    )
 
 
 def test_cache_hit_shortens_only_the_critical_path(tmp_path):
     shared = words(64, "s")
 
     def build(b):
-        b.job(0.0).llm("x", [shared, words(10, "p"), HEADER], output_text(words(3, "o")))
+        b.job(0.0).llm(
+            "x", [shared, words(10, "p"), HEADER], output_text(words(3, "o"))
+        )
         j = b.job(10.0)
-        j.tool("slow", 10.0)                      # the critical path
-        j.llm("x", [shared, words(10, "q"), HEADER], output_text(words(3, "o")))   # off the path
+        j.tool("slow", 10.0)  # the critical path
+        j.llm(
+            "x", [shared, words(10, "q"), HEADER], output_text(words(3, "o"))
+        )  # off the path
 
     t, hot = run(tmp_path, build, num_blocks=64)
     assert hot.diag["cache_hit_tokens"] >= 64
-    assert hot.flows[1] == pytest.approx(10.0)    # the hit changed nothing
-    t, cold = run(tmp_path, build, num_blocks=12)  # too small to keep the shared prefix around
+    assert hot.flows[1] == pytest.approx(10.0)  # the hit changed nothing
+    t, cold = run(
+        tmp_path, build, num_blocks=12
+    )  # too small to keep the shared prefix around
     assert cold.flows[1] == pytest.approx(10.0)
 
 
@@ -98,13 +117,19 @@ def test_cache_hit_on_the_critical_path(tmp_path):
     shared = words(64, "s")
 
     def build(b):
-        b.job(0.0).llm("x", [shared, words(10, "p"), HEADER], output_text(words(3, "o")))
-        b.job(10.0).llm("x", [shared, words(10, "q"), HEADER], output_text(words(3, "o")))
+        b.job(0.0).llm(
+            "x", [shared, words(10, "p"), HEADER], output_text(words(3, "o"))
+        )
+        b.job(10.0).llm(
+            "x", [shared, words(10, "q"), HEADER], output_text(words(3, "o"))
+        )
 
     t, r = run(tmp_path, build)
     n = list(t.llm_nodes())[1][1]
     hit = 64
-    assert r.flows[1] == pytest.approx(0.01 * (n.n_prompt - hit) + 0.1 * (n.n_output - 1))
+    assert r.flows[1] == pytest.approx(
+        0.01 * (n.n_prompt - hit) + 0.1 * (n.n_output - 1)
+    )
 
 
 def test_points_conversion():
@@ -119,7 +144,10 @@ def test_points_conversion():
 
 
 def rows(ratios):
-    return [{"family": f, "ratio": r, "mean_flow": 10.0 / r, "b0_mean_flow": 10.0} for f, r in ratios]
+    return [
+        {"family": f, "ratio": r, "mean_flow": 10.0 / r, "b0_mean_flow": 10.0}
+        for f, r in ratios
+    ]
 
 
 def test_family_balanced_speedup():

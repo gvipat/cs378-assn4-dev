@@ -27,12 +27,12 @@ TIMING_PATH = Path(__file__).resolve().parent.parent / "data" / "timing.json"
 
 @dataclass(frozen=True)
 class TimingModel:
-    p_base: float = 0.010       # s per prefill step (launch + weight read)
-    p_token: float = 9.6e-5     # s per new token (dense layers: ~16 GFLOP/token)
-    p_attn: float = 3.5e-9      # s per attention (q, k) pair over all layers (~0.6 MFLOP)
-    d_base: float = 0.0106      # s per decode step (16.4 GB of weights read once per step)
-    d_seq: float = 1.0e-4       # s per sequence in the batch
-    d_ctx: float = 9.7e-8       # s per context token read (144 KiB at 1.55 TB/s)
+    p_base: float = 0.010  # s per prefill step (launch + weight read)
+    p_token: float = 9.6e-5  # s per new token (dense layers: ~16 GFLOP/token)
+    p_attn: float = 3.5e-9  # s per attention (q, k) pair over all layers (~0.6 MFLOP)
+    d_base: float = 0.0106  # s per decode step (16.4 GB of weights read once per step)
+    d_seq: float = 1.0e-4  # s per sequence in the batch
+    d_ctx: float = 9.7e-8  # s per context token read (144 KiB at 1.55 TB/s)
     name: str = "qwen3-8b-a100-estimate"
 
     def prefill(self, chunks: list[tuple[int, int]]) -> float:

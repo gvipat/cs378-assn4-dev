@@ -14,8 +14,12 @@ def _all() -> tuple[dict, ...]:
     return tuple(json.loads(QUESTIONS_PATH.read_text())["questions"])
 
 
-def load_questions(*, public: bool | None = None, groups: list[str] | None = None,
-                   topics: list[str] | None = None) -> list[dict]:
+def load_questions(
+    *,
+    public: bool | None = None,
+    groups: list[str] | None = None,
+    topics: list[str] | None = None,
+) -> list[dict]:
     """Return questions in file order, optionally filtering by public flag, group, or topic."""
     out = []
     for q in _all():

@@ -43,8 +43,15 @@ class SchedulingHooks:
 
 class Scheduler:
 
-    def __init__(self, kv: KVCacheManager, *, max_num_seqs: int, max_num_batched_tokens: int,
-                 on_call: OnCall | None = None, hooks: SchedulingHooks | None = None):
+    def __init__(
+        self,
+        kv: KVCacheManager,
+        *,
+        max_num_seqs: int,
+        max_num_batched_tokens: int,
+        on_call: OnCall | None = None,
+        hooks: SchedulingHooks | None = None,
+    ):
         self.kv = kv
         self.hooks = hooks or SchedulingHooks()
         self.block_size = kv.block_size
@@ -81,7 +88,9 @@ class Scheduler:
         if len(fresh) > 1:
             order = self.hooks.admission_order(fresh)
             if sorted(map(id, order)) != sorted(map(id, fresh)):
-                raise EngineError("admission_order did not return a permutation of the waiting calls")
+                raise EngineError(
+                    "admission_order did not return a permutation of the waiting calls"
+                )
             fresh = order
         self.waiting = deque(started + fresh)
 
@@ -106,7 +115,9 @@ class Scheduler:
                 num_tokens = seq.num_tokens - len(hits) * bs
             else:
                 num_tokens = seq.num_tokens - seq.num_cached_tokens
-            if remaining < num_tokens and scheduled:   # only the first sequence may be chunked
+            if (
+                remaining < num_tokens and scheduled
+            ):  # only the first sequence may be chunked
                 break
             if hits is not None:
                 self.kv.allocate(seq, hits)
@@ -131,12 +142,18 @@ class Scheduler:
             while not self.kv.can_append(seq):
                 # Candidates in scheduling order: the one being scheduled now came
                 # first, then the rest (nano-vLLM preempts the last one).
-                victim = self.hooks.choose_preempted([seq] + list(self.running)) if self.running else seq
+                victim = (
+                    self.hooks.choose_preempted([seq] + list(self.running))
+                    if self.running
+                    else seq
+                )
                 if victim is seq:
                     self.preempt(seq)
                     break
                 if victim not in self.running:
-                    raise EngineError("choose_preempted returned a call that is not running")
+                    raise EngineError(
+                        "choose_preempted returned a call that is not running"
+                    )
                 self.running.remove(victim)
                 self.preempt(victim)
             else:

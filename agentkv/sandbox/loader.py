@@ -29,11 +29,19 @@ def load_policy_class(source: str, filename: str = "<policy>") -> type[Policy]:
         raise PolicyError("load", f"{type(exc).__name__}: {exc}") from exc
     cls = getattr(mod, "POLICY", None)
     if cls is None:
-        found = [v for v in vars(mod).values()
-                 if isinstance(v, type) and issubclass(v, Policy) and v is not Policy
-                 and v.__module__ == MODULE_NAME]
+        found = [
+            v
+            for v in vars(mod).values()
+            if isinstance(v, type)
+            and issubclass(v, Policy)
+            and v is not Policy
+            and v.__module__ == MODULE_NAME
+        ]
         if len(found) != 1:
-            raise PolicyError("load", f"expected one Policy subclass (or POLICY = ...), found {len(found)}")
+            raise PolicyError(
+                "load",
+                f"expected one Policy subclass (or POLICY = ...), found {len(found)}",
+            )
         cls = found[0]
     if not (isinstance(cls, type) and issubclass(cls, Policy)):
         raise PolicyError("load", "POLICY must be a subclass of agentkv.policy.Policy")

@@ -23,14 +23,18 @@ CALL = "c0"
 
 
 def _h(name: str) -> int:
-    return int.from_bytes(hashlib.blake2b(name.encode(), digest_size=16).digest(), "little")
+    return int.from_bytes(
+        hashlib.blake2b(name.encode(), digest_size=16).digest(), "little"
+    )
 
 
 class CacheHarness:
 
     def __init__(self, policy: Policy, capacity: int = 3):
         self.rt = PolicyRuntime(policy, block_size=1, total_blocks=capacity, seed=0)
-        self.kv = KVCacheManager(capacity, 1, choose_victim=self._victim, emit=self._emit)
+        self.kv = KVCacheManager(
+            capacity, 1, choose_victim=self._victim, emit=self._emit
+        )
         self.names: dict[int, str] = {}
         self.seqs: dict[str, list[Seq]] = {}
         self.parents: dict[str, str | None] = {}
@@ -81,7 +85,11 @@ class CacheHarness:
         return [self.names[self.kv.blocks[b].hash] for b in self.kv.cached]
 
     def active(self) -> list[str]:
-        return sorted(self.names[b.hash] for b in self.kv.blocks if b.ref > 0 and b.hash is not None)
+        return sorted(
+            self.names[b.hash]
+            for b in self.kv.blocks
+            if b.ref > 0 and b.hash is not None
+        )
 
     def resident(self) -> set[str]:
         return {self.names[h] for h in self.kv.prefix_map}
@@ -110,7 +118,9 @@ class CacheHarness:
             self._events.append(("hit", self.t, name, CALL))
         elif kind == "alloc":
             parent = self.parents.get(name)
-            self._events.append(("alloc", self.t, name, parent, self._depth(name), CALL, name, 0))
+            self._events.append(
+                ("alloc", self.t, name, parent, self._depth(name), CALL, name, 0)
+            )
         elif kind == "release":
             self._events.append(("release", self.t, name, CALL, kw["refs"]))
         elif kind == "evict":
@@ -127,5 +137,7 @@ class CacheHarness:
         pid = self.rt.choose_victim(hdr)
         bid = self.kv.prefix_map.get(_h(pid)) if isinstance(pid, str) else None
         if bid is None or bid not in cached:
-            raise PolicyError("invalid", f"choose_victim returned {pid!r}, which is not a candidate")
+            raise PolicyError(
+                "invalid", f"choose_victim returned {pid!r}, which is not a candidate"
+            )
         return bid
