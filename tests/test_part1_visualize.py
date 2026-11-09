@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import matplotlib
@@ -19,10 +20,25 @@ def test_cap_demo_shows_existing_calls_finishing_before_new_calls_start():
     assert all(c["start"] < demo.change_time < c["end"] for c in first)
     assert min(c["start"] for c in waiting) >= max(c["end"] for c in first)
     assert all(a["end"] <= b["start"] for a, b in zip(waiting, waiting[1:]))
-    assert demo.peak == 3 and demo.over_limit == 0
+    assert demo.peak == 3
     fig = plot_cap_demo(demo)
     assert len(fig.axes) == 2
     plt.close(fig)
+
+
+def test_cap_demo_measures_calls_without_limiter_statistics():
+    class UnlimitedLimiter:
+        limit = 3
+
+        @asynccontextmanager
+        async def slot(self):
+            yield
+
+        async def set_limit(self, limit):
+            self.limit = limit
+
+    demo = asyncio.run(run_cap_demo(UnlimitedLimiter()))
+    assert demo.peak == 6
 
 
 def test_stage_plot_keeps_history_from_other_stages():

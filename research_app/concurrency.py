@@ -9,9 +9,6 @@ across the whole run. The cap must satisfy the following rules:
 - `await cap.set_limit(n)` takes effect immediately for new acquisitions.
   Lowering it never cancels or interrupts calls already in flight; they
   finish and release, and waiting calls proceed once in_flight < limit.
-- `peak` records the largest number of slots held at once. `over_limit`
-  counts incorrect grants made when no slot was available. Calls already
-  running may temporarily exceed a lowered cap; that is not an incorrect grant.
 """
 
 from __future__ import annotations
@@ -29,9 +26,6 @@ class ConcurrencyLimiter:
         self._limit = limit
         self._in_flight = 0
         self._cond = asyncio.Condition()
-        self.peak = 0  # most slots ever held at once
-        self.over_limit = 0  # grants made while in_flight >= limit (must stay 0)
-        self.grants = 0  # operations granted a slot; retries keep the same slot
 
     @property
     def limit(self) -> int:
@@ -47,9 +41,7 @@ class ConcurrencyLimiter:
         # Several reports may call this method at once. Wait until _in_flight is
         # below _limit, then update the count while still holding the condition
         # lock so another caller cannot take the same slot. A cancelled waiter
-        # must leave the counters unchanged. For each grant, increment grants
-        # and update peak; over_limit counts grants made at or above the limit
-        # and should remain zero in a correct implementation.
+        # must leave _in_flight unchanged.
         raise NotImplementedError("Part 1: fill acquire")
         # END OF YOUR CODE
 
