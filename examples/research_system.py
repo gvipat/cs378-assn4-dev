@@ -174,7 +174,7 @@ def main():  # score() runs traces in a process pool, so everything lives under 
                 "evaluator_sha256": hashlib.sha256(
                     evaluator_source.encode()
                 ).hexdigest(),
-                "selection": "highest valid development objective among generated candidates; score all validation categories at the end",
+                "selection": "highest valid development objective among the seed and generated candidates; validate the selection at the end",
                 "stopping": "fixed iteration count",
                 "offline": args.offline,
             },
@@ -193,7 +193,9 @@ def main():  # score() runs traces in a process pool, so everything lives under 
             + "; ".join(best["violations"][:2])
         )
     history = [f"start ({args.start}, its default parameters): {brief(best)}"]
-    selected, selected_id = None, None
+    selected, selected_id = best, "start"
+    (out / "start.py").write_text(best_code)
+    (out / "best.py").write_text(best_code)
     print(history[0])
     for i in range(args.iters):
         prompt = (
@@ -252,11 +254,6 @@ def main():  # score() runs traces in a process pool, so everything lives under 
             (out / "best.py").write_text(path.read_text())
         print(history[-1])
 
-    if selected_id is None:
-        print(
-            "No valid generated candidate; inspect the failures and revise the system before another campaign."
-        )
-        return
     final = out / "best.py"
     validation = score(str(final), split="public_val")
     (out / "validation.scores.json").write_text(

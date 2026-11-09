@@ -1,6 +1,7 @@
 """Research objectives control selection without replacing the reported scores."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -130,3 +131,61 @@ def evaluate(policy_path, *, split):
     assert (out / "evaluator.py").read_bytes() == custom.read_bytes()
     assert json.loads((out / "p01.scores.json").read_text())["speedup"] == 0.9
     assert "research evaluator" in (out / "p00.prompt.txt").read_text()
+
+
+@pytest.mark.parametrize("generated", ["worse", "equal", "invalid"])
+def test_seed_wins_when_generated_candidates_do_not_improve_it(
+    generated, tmp_path, monkeypatch
+):
+    seed = tmp_path / "seed.py"
+    seed.write_text(
+        "from agentkv.policy import Policy\n"
+        "class P(Policy):\n"
+        "    def target_concurrency(self, view, state):\n"
+        "        return 8\n"
+        "    def choose_victim(self, view, candidates, state):\n"
+        "        return candidates[0]\n"
+    )
+
+    def evaluate(path, *, split):
+        is_seed = str(path) == str(seed)
+        valid = is_seed or generated != "invalid"
+        value = 1.2 if is_seed or generated == "equal" else 0.9
+        return {
+            "valid": valid,
+            "violations": [] if valid else ["invalid candidate"],
+            "speedup": value,
+            "by_family": {"W3": value},
+            "objective": value if valid else None,
+        }
+
+    validations = []
+
+    def validate(path, *, split):
+        validations.append((path, split))
+        assert Path(path).read_bytes() == seed.read_bytes()
+        result = {
+            "valid": True,
+            "violations": [],
+            "speedup": 1.1,
+            "by_family": {"W3": 1.1},
+        }
+        return SimpleNamespace(**result, to_json=lambda: result)
+
+    out = tmp_path / "campaign"
+    monkeypatch.setattr(research_system, "load_evaluator", lambda path: evaluate)
+    monkeypatch.setattr(research_system, "score", validate)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["research_system.py", "--offline", "--iters", "2",
+         "--start", str(seed), "--out", str(out)],
+    )
+    research_system.main()
+    selected = json.loads((out / "selection.json").read_text())
+    assert selected["candidate"] == "start"
+    assert selected["dev_S"] == 1.2
+    assert selected["val_S"] == 1.1
+    assert (out / "start.py").read_bytes() == seed.read_bytes()
+    assert (out / "best.py").read_bytes() == seed.read_bytes()
+    assert len((out / "log.jsonl").read_text().splitlines()) == 2
+    assert validations == [(str(out / "best.py"), "public_val")]

@@ -161,6 +161,7 @@ Computes the time series of KV-cache memory held by active LLM calls, comparing 
   - An LLM call occupies KV memory during `[slot_acquired, end)`, holding `prompt_tokens + output_tokens` tokens (at 128 KiB per token by default for Llama-3-8B in bf16).
   - Evaluate the footprint at every distinct `slot_acquired` and `end` timestamp across `calls` in ascending order. At timestamp `t`, a call is active if `slot_acquired <= t < end`.
   - At each timestamp `t`, record a `Footprint(t, calls, private, shared)`:
+    - `calls`: the number of active LLM calls at `t`.
     - `calls`: the number of active LLM calls holding a slot at time `t`.
     - `private`: total KV bytes if every active call stores all of its `prompt_tokens + output_tokens` independently.
     - `shared`: total KV bytes if identical full prefix blocks (`block_hashes`) are stored only once across all active calls, while each call's remaining tokens (its trailing partial prompt block plus `output_tokens`) are stored separately.
@@ -192,14 +193,14 @@ In Section 5 of `notebooks/part1_deep_research.ipynb`, run the cells to plot you
 **Q1. Critical path.**
 
 - For one report from `runs/c2`, include its DAG plot showing the critical path and report the time (in seconds) spent in `gap`, `wait` (slot wait), LLM `service`, and tool `service` along that path.
-- Report the same four-way breakdown averaged across all 16 reports at C = 2 and at C = 8. Why does the primary bottleneck shift between C = 2 and C = 8?
-- At C = 8, each report fans out its subtopic branches in parallel (`Send`) and fetches up to three documents per branch in parallel (`asyncio.gather`). Based on your trace, by how many seconds per report would the critical path grow if subtopics instead ran sequentially? How much if document fetches within each branch ran sequentially? Which single change to the agent workflow or output length would reduce the C = 8 critical path the most, and by roughly how much? (No implementation needed.)
+- Report the same four-way breakdown averaged across all 16 reports at C = 2 and at C = 8. Which component dominates at each concurrency limit? Explain any shift in the bottleneck.
+- At C = 8, each report fans out its subtopic branches in parallel (`Send`) and fetches up to three documents per branch in parallel (`asyncio.gather`). Estimate how much the critical path would grow if subtopics ran sequentially, and separately if fetches within a branch ran sequentially. Use the recorded service times, hold other delays fixed, and state your assumptions; this is an estimate, not a prediction of how slot waits would change after rescheduling all reports. Which change to the workflow or output length would save the most time, and by roughly how much? No implementation is needed.
 
 **Q2. Prefix reuse.**
 
-- At C = 8, report `prefix_hit_rate` overall and broken down by stage (from notebook Section 5b), and identify what prompt content each stage is reusing. How and why does the overall hit rate change at C = 2? Why does `extract`—which accounts for the largest share of prompt tokens—have the lowest hit rate?
-- At C = 8, for each stage that reuses blocks, report the fraction of reuses with `interval == 0` (where an earlier holder is still running), the 90th-percentile reuse interval, and the maximum reuse interval. Why are most reuse intervals zero, and what produces the multi-second tail in `extract`? Why does C = 2 have a higher fraction of zero reuse intervals than C = 8, even though fewer calls run concurrently?
-- Which full 256-token prefix blocks in this workload can never be reused by a prefix cache, and why?
+- At C = 8, report `prefix_hit_rate` overall and by stage, and identify what prompt content each stage reuses. Does the overall rate differ at C = 2? Explain why changing concurrency can change reuse timing without changing the prompt content, and discuss any content differences in your runs. Which stage accounts for the most prompt tokens, and how does its hit rate compare with the others?
+- At C = 8, for each stage that reuses blocks, report the fraction of reuses with `interval == 0`, the 90th-percentile interval, and the maximum interval. Explain the zero intervals and any long tail in `extract`. Compare the overall fraction of zero intervals at C = 2 and C = 8. Remember that `reuse_intervals` models a call as holding blocks from `start` to `end`, including time spent waiting for a slot; it does not measure actual GPU cache residency.
+- Which full 256-token prefix blocks appear in only one call in these recorded runs? Identify what prompt content they contain and explain why retaining them would not help this fixed workload.
 
 **Q3. Concurrency and memory.**
 
@@ -210,14 +211,14 @@ In Section 5 of `notebooks/part1_deep_research.ipynb`, run the cells to plot you
   | C = 2 |                     |          |                |                           |                     |                         |
   | C = 8 |                     |          |                |                           |                     |                         |
 
-- In the simulator replay sweep, mean report latency decreases or flattens with higher C at 49,152 and 393,216 KV tokens, but increases above C = 4 at 12,288 tokens. Explain why using the simulator's `preemptions`, `recomputed_tokens`, and `evictions` metrics. How does the latency curve behave at 16,384 tokens, and what does this imply about choosing a concurrency limit near the KV memory limit?
-- On a single 80 GB A100 with 16 GB occupied by Llama-3-8B weights, which concurrency limit would you pick for this workload, and how much KV memory would remain free at peak usage? If you instead had to serve this workload within a 16,384-token KV budget (2 GiB, ~2.15 GB), which concurrency limit in 4–8 would you choose, and why?
+- Plot mean report latency against C for each KV capacity. Identify where increasing concurrency helps, levels off, or hurts, and explain the differences using `preemptions`, `recomputed_tokens`, and `evictions`. Pay particular attention to 12,288 and 16,384 tokens. What do the results imply about choosing a concurrency limit near the KV memory limit?
+- On a single 80 GB A100 with 16 GB occupied by model weights, which concurrency limit and KV capacity from the replay sweep would you choose? Justify the choice using latency and memory use. Use the replay's peak resident KV memory (active plus cached blocks) to estimate KV headroom within the remaining 64 GB. Treat this as a capacity estimate, ignore other runtime allocations, and use consistent units. If limited to 16,384 KV tokens (2 GiB, about 2.15 GB), which C in 4–8 would you choose, and why?
 
 **Q4. Failures.**
 
-- Compare `runs/c8-faults` against `runs/c8`: report the total number of retried operations, follow-up branches, and repair calls. Why does every follow-up branch and repair call appear on its report's critical path? In `runs/c8-faults`, what fraction of *all* tool operations lie on a critical path versus what fraction of *retried* tool operations lie on a critical path, and why do those two fractions differ?
+- Compare `runs/c8-faults` against `runs/c8`: report the number of retried operations, follow-up branches, and repair calls. Check whether the follow-up branches and repair calls lie on their reports' critical paths, and explain this using the graph dependencies. In `runs/c8-faults`, compare the fraction of all tool operations on a critical path with the fraction of retried tool operations on a critical path. Explain any difference.
 - Report the median and maximum report latency for both `runs/c8` and `runs/c8-faults`.
-- In `TracingClient.llm_call`, an LLM call holds onto its concurrency slot while sleeping during retry backoff. At C = 2, under what conditions would releasing the slot during backoff hurt vs. help mean report latency? (Consider both your C = 2 slot wait times and what happens to a call's cached KV blocks if another call takes its slot under tight memory.)
+- In `TracingClient.llm_call`, an LLM call keeps its slot during retry backoff. Using your C = 2 slot waits, discuss when releasing it would help or hurt mean report latency. The required fault run injects tool failures, so treat LLM retries as a hypothetical case. For a serving engine that retains prefixes between attempts, also discuss possible cache effects under tight memory and state your assumptions about retention. No extra experiment is required.
 
 
 
@@ -367,20 +368,20 @@ If you want to test custom policy variants, save them as copies under `candidate
 **Q1. Concurrency.**
 
 - Looking at the one-replica and two-replica concurrency grids, which workload families prefer a low concurrency limit on one replica? Explain why in terms of their memory per call, prefix reuse, and job DAG structure.
-- Why does the optimal concurrency limit shift when moving from one replica to two replicas?
+- For which families does the best tested concurrency limit change when moving from one replica to two? Explain the changes, and note any families whose best limit stays the same.
 - Identify one workload family whose ideal concurrency limit likely changes *within* a single trace, and explain which trace feature causes this.
 
 **Q2. Eviction.**
 
 - Present a single table showing overall speedup `S` and per-family speedups (relative to LRU) for: (a) FIFO on one replica, (b) prefix-aware eviction on one replica, and (c) prefix-aware eviction on two replicas.
-- Which workload families gain the most from prefix-aware eviction, and what property of their prompts explains the improvement? Why is the relative gain smaller on two replicas than on one?
+- Which workload families benefit most from prefix-aware eviction, and what about their prompts explains the result? Compare the relative gains on one and two replicas. Explain the differences, including any cases where two replicas do not reduce the gain.
 - Describe a realistic or hypothetical workload in which evicting leaf blocks first performs *worse* than plain LRU.
 
 **Q3. Routing.**
 
 - Include the `balance_threshold` speedup grid from Section 6 and state which threshold achieves the highest overall `S`.
 - Which workload families regress at `balance_threshold = 16`, and what in the two `dev-W4-0` timelines (`balance_threshold = 1` vs. `16`) explains why?
-- How would you modify `route_call` so that cache-aware routing never performs worse than least-loaded routing on `W4`?
+- Propose a change to `route_call` that reduces the observed W4 regression using only the current view and past events. What load-versus-affinity tradeoff does it make? Could it guarantee no regression on unseen W4-like workloads without falling back to least-loaded routing? Explain; no implementation is required.
 
 
 
@@ -507,24 +508,23 @@ Answer **Q1–Q6** in `assignment4_report.pdf`, placing each answer directly und
 **Q3. Autonomy.**
 
 - For your longest unattended campaign, report its wall-clock duration, total candidates scored, and total tokens spent, and summarize your `interventions.jsonl` log across campaigns.
-- Quote log entries (`hypothesis` -> evaluation result -> next `hypothesis`) for: (1) one example where an agent accurately diagnosed a failure or bottleneck and proposed an effective follow-up, and (2) one example where it failed to do so.
+- Quote log entries (`hypothesis` -> evaluation result -> next `hypothesis`) for a useful diagnosis and an unsuccessful one, if both occurred. If either case is absent, state that and use your logs to explain what the agents actually did.
 
 **Q4. Cost.**
 
 - For each campaign in Q2, plot the best `public_dev` `S` found so far against (1) total tokens spent and (2) number of candidates scored; mark the finalists' `public_val` `S` on the plots, and report the fraction of generated candidates that were valid.
-- Looking at the cost curves, at what token budget would you have stopped early, and how much `public_dev` and `public_val` `S` would that early stop have cost?
+- Choose an earlier stopping point from the development-score and cost curves. Identify the policy your system would have selected at that point, then score that saved candidate on `public_val` for this comparison. Report the change in both scores and the tokens saved; the earlier policy may score better or worse. Do not use its validation score to choose the stopping point.
 
 **Q5. The selected policy.**
 
-- Explain how your selected policy works in your own words, accompanied by concise pseudocode and an annotated two-replica timeline from `viz.record(..., replicas=2)`. (If a hand-written seed won your campaign, analyze the best agent-generated finalist instead.)
-- Ablate (disable) one specific mechanism that the agents introduced and report the resulting change in `S` and per-family speedups on both `public_dev` and `public_val`.
-- Quote the agent's logged hypothesis for that mechanism and evaluate whether your ablation measurements support the agent's reasoning.
+- Explain how your selected policy works in your own words, with pseudocode and an annotated timeline from `viz.record(..., replicas=2)`. If a seed won, analyze the best valid agent-generated finalist instead. If no generated candidate was valid, analyze the seed and one representative failed attempt.
+- Disable one mechanism the agents introduced or changed and report the change in S and per-family speedups on both public splits. Quote the logged hypothesis and assess whether the measurement supports it. If no distinct mechanism was introduced, state that and ablate a seed mechanism as a baseline comparison.
 
 **Q6. Limitations.**
 
-- Report the selected policy's per-family speedups on both `public_dev` and `public_val`, and use a `viz.record` timeline to explain why it struggles on its weakest workload family.
+- Report the selected policy's per-family speedups on both public splits and use a `viz.record` timeline to explain its weakest or least-improved family.
 - Predict a range for its hidden-test `S`, justifying your interval using the observed variance across `public_dev`, `public_val`, and the Gradescope leaderboard.
-- Highlight one effective idea the agents discovered that you would not have thought to try by hand, and one failure mode or bug you had to fix manually in your research system or seeds.
+- What, if anything, did the agents add beyond your seeds and prompts? Cite an effective idea or explain the lack of improvement using your results. Describe a problem you fixed manually, if any, or explain how the system handled failures without intervention.
 
 
 
