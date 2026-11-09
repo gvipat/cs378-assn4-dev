@@ -6,8 +6,9 @@
 
     python -m agentkv.score --policy candidates/p17.py --split public_dev
 
-Scoring runs Vidur locally with two independent replicas by default;
-use replicas=1 for Part 2. Traces are scored in parallel worker processes
+Scoring runs Vidur locally with two independent replicas by default.
+Part 2 compares one and two replicas; Part 2.3 and Part 3 use two.
+Pass replicas=1 for single-replica experiments. Traces are scored in parallel worker processes
 (AGENTKV_WORKERS overrides the count), so call score() from a saved script
 under `if __name__ == "__main__":`, from a notebook, or with workers=1.
 """
