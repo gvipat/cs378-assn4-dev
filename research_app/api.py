@@ -1,4 +1,4 @@
-"""Run the student's research graph on a topic and save its report and sources."""
+"""Run the research workflow on a topic and save its report and sources."""
 
 from __future__ import annotations
 

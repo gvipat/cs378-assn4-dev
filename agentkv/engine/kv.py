@@ -1,21 +1,14 @@
-"""KV block lifecycle: reference counts, the prefix map, and the retention hook.
+"""Manage KV blocks in the legacy single-replica simulator.
 
-Every physical block is in exactly one state:
+Blocks are empty, active (referenced by a sequence), or cached (unreferenced
+but reusable). Full computed blocks receive chained prefix hashes; partial
+blocks are never shared. If a hash already has a resident block, a duplicate
+stays anonymous and becomes empty when released.
 
-  empty   no reusable contents (never used, or released without an identity)
-  active  ref > 0, held by one or more sequences
-  cached  ref == 0 but still mapped by its prefix hash, so it can be reused
-
-A block gets an identity (its chained prefix hash) once all of its tokens have
-been computed. If another block already holds that identity, the new one stays
-anonymous and goes back to empty when released, so a prefix id names exactly
-one physical block. Allocation takes empty blocks first; only when none are
-left does it ask `choose_victim` to pick one cached block to overwrite, and the
-victim's map entry is removed before the block is reused, so a stale entry can
-never produce a false hit. Partial blocks are never shared.
-
-Mirrors nano-vLLM's BlockManager (pinned bb823b3e0698), with the free list
-split into empty and cached and the eviction order delegated to the policy.
+Allocation uses empty slots first, then asks choose_victim for a cached block
+to overwrite. The implementation follows nano-vLLM's block manager, with
+separate empty and cached queues. Assignment scoring uses the Vidur cache
+adapter in engine.vidur_adapter.
 """
 
 from __future__ import annotations

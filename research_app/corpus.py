@@ -1,10 +1,9 @@
-"""Search and retrieve articles from the assignment's saved Wikipedia corpus.
+"""Search the saved Wikipedia corpus and retrieve article revisions.
 
-The corpus contains 48 articles on six systems topics, with two saved
-revisions of each article in data/corpus/docs.json. Searches use these local
-documents. The tool wrapper also assigns reproducible delays and failures
-to operations. The tracing client waits for those delays during timed runs;
-when generating replay traces, it records the delays without waiting.
+The corpus contains 48 articles on six systems topics, with two revisions of
+each article in data/corpus/docs.json. The tool wrapper assigns reproducible
+delays and failures. Timed runs wait for the delays; --record logs them
+without waiting. Exporting replay.json with --replay does not change timing.
 """
 
 from __future__ import annotations

@@ -8,9 +8,9 @@
 
 Scoring runs Vidur locally with two independent replicas by default.
 Part 2 compares one and two replicas; Part 2.3 and Part 3 use two.
-Pass replicas=1 for single-replica experiments. Traces are scored in parallel worker processes
-(AGENTKV_WORKERS overrides the count), so call score() from a saved script
-under `if __name__ == "__main__":`, from a notebook, or with workers=1.
+Pass replicas=1 for single-replica experiments. Traces run in worker processes;
+AGENTKV_WORKERS overrides the worker count. Call score() from a notebook, from
+a script guarded by `if __name__ == "__main__":`, or with workers=1.
 """
 
 from __future__ import annotations
@@ -204,8 +204,11 @@ def evaluate(
     split: str = "",
     replicas: int = 2,
 ) -> ScoreResult:
-    """Score `policy_path` on the given traces. `b0="reference"` uses the frozen
-    reference job latencies; `b0="live"` reruns the reference policy (staff)."""
+    """Score a policy against reference job latencies.
+
+    b0="reference" uses frozen staff results. b0="live" reruns the local
+    policies/reference.py, which must be implemented first.
+    """
     from .engine.vidur_profile import fingerprint as vidur_fingerprint
 
     if backend != "sim":

@@ -55,8 +55,9 @@ hashes.
 ```
 
 - `segments` maps a segment id to its text and token count. A prompt is the
-  concatenation of its segments, each tokenized separately, so two prompts
-  share a prefix exactly when they start with the same segments.
+  concatenation of its segments, each tokenized separately. Repeated leading
+  segments produce shared prefixes; cache matching uses full token blocks,
+  not segment ids.
 - `type: "llm"` nodes have a `prompt` (a list of segment ids) and an `output`
   (one segment id, whose tokens are the frozen output). `type: "tool"` nodes
   have a `delay` in seconds; think time is a tool node with stage `think`.
@@ -75,7 +76,11 @@ source share it here, with exact token counts.
 ## Simulator settings
 
 Trace files use 256-token blocks. The simulator rebuilds prefix hashes in
-16-token blocks with the same KV token quota per replica, and changes no
-arrivals, dependencies, tool delays, or prompt and output lengths. Some prompts
+16-token blocks with the same KV token quota per replica. It replaces the
+trace's engine settings with a scheduler limit of 16 calls per replica and a
+default batch budget of 2,048 tokens. `target_concurrency` limits total calls
+in flight across replicas to 1–16; `batch_token_budget` can choose 512, 1,024,
+2,048, or 4,096 tokens. Arrival times, dependencies, tool delays, and prompt and
+output lengths stay unchanged. Some prompts
 reach 32K tokens, beyond Llama-3-8B's 8K context; the simulator uses them for
 timing only. See [The simulator](../README.md#the-simulator).

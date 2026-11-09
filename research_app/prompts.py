@@ -1,13 +1,12 @@
-"""Prompts for the deep research agent (supplied).
+"""Build prompts for each stage of the research workflow.
 
-Every LLM call is a list of messages built in a fixed order so that calls
-share long prefixes across reports:
+Calls start with a shared system prompt and stage instructions. Extraction
+places documents in doc_id order before the subtopic and question. Synthesis
+places the question and plan before the evidence. Repair appends the draft
+and citation errors to the synthesis conversation.
 
-    system prompt  ->  stage instructions  ->  documents (canonical doc_id order)
-                   ->  the question / subtopic  ->  generation header
-
-`render()` turns messages into trace segments with the Qwen3 chat format in
-agentkv.trace, one segment per message.
+render() converts messages to trace segments using the Qwen3 chat format,
+with one segment per message.
 """
 
 from __future__ import annotations

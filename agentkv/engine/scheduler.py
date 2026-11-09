@@ -1,18 +1,12 @@
-"""The engine scheduler, shared by the CPU simulator and the GPU replay.
+"""Schedule sequences in the legacy single-replica simulator.
 
-It follows nano-vLLM's Scheduler at the pinned commit: only the first sequence
-of a prefill batch may be chunked, prefill and decode run in separate steps,
-and a preempted sequence is recomputed later. Three of its choices are
-delegated to the policy through `hooks`, and default to nano-vLLM's rules:
+Prefill and decode run in separate steps. Admission defaults to FIFO;
+preemption selects the most recently scheduled eligible sequence. Policy
+hooks can override admission and preemption.
 
-  admission order   which waiting sequences to admit first (default: FIFO)
-  prefill first     whether a step prefills when it could also decode (default: yes)
-  preemption        which running sequence to preempt when decode runs out of
-                    blocks (default: the most recently scheduled)
-
-The one addition is a liveness guard: if nothing can be scheduled while
-sequences part-way through a chunked prefill hold blocks, those sequences are
-preempted so that the head of the queue can be admitted.
+If unfinished chunked prefills prevent any progress, the scheduler preempts
+them to free space for the head of the queue. Assignment scoring uses Vidur's
+mixed prefill/decode scheduler in engine.vidur_adapter instead.
 """
 
 from __future__ import annotations

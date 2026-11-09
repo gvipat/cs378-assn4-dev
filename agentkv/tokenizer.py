@@ -1,8 +1,7 @@
-"""The frozen tokenizer that every trace is defined against.
+"""Tokenize trace segments with the pinned Qwen3 tokenizer.
 
-Traces store text. A prompt's token sequence is the concatenation of each of
-its segments tokenized separately with this tokenizer, so the CPU simulator
-and the GPU replay do identical token work.
+Each segment is tokenized separately, then concatenated to form the prompt.
+Vidur uses these token counts and prefix hashes to simulate serving.
 """
 
 from __future__ import annotations

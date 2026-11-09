@@ -49,8 +49,8 @@ class Policy:
     ) -> str:
         """Return the id of a cached block to evict from candidates.
 
-        All candidates have zero active references and are listed by release time,
-        oldest first.
+        Candidates are unreferenced blocks on view.replica, ordered by release
+        time, oldest first.
         """
         raise NotImplementedError
 
@@ -69,18 +69,19 @@ class Policy:
     ) -> list[str]:
         """Return a permutation of the waiting calls in admission order.
 
-        The default is first come, first served. Calls whose chunked prefill has
-        already started are excluded from waiting and finish their prefill first.
+        The default preserves queue order. Waiting calls may include preempted
+        calls; running calls, including unfinished prefills, are scheduled
+        separately.
         """
         return list(waiting)
 
     def choose_preempted(
         self, view: "View", running: Sequence[str], state: "State"
     ) -> str:
-        """Return the running call that should release its blocks when memory runs out.
+        """Return an eligible running call to preempt when memory runs out.
 
-        Running calls are listed in scheduling order. The default preempts the
-        most recently scheduled call.
+        Candidates are listed in scheduling order. Calls already reserved for
+        the current batch are excluded. The default returns the last candidate.
         """
         return running[-1]
 
@@ -257,7 +258,7 @@ class View:
     total_blocks: int
     empty_blocks: int  # blocks holding nothing reusable
     active_blocks: int  # blocks with references (includes partial blocks)
-    cached_blocks: int  # resident zero-reference prefix blocks (== len(candidates))
+    cached_blocks: int  # unreferenced resident blocks across all replicas
     waiting: int  # not admitted, or returned to waiting after preemption
     running: int  # admitted calls, including unfinished chunked prefill
     ready: Mapping[str, Call]  # ready, not dispatched, oldest first
