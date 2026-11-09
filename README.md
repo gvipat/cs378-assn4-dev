@@ -122,6 +122,8 @@ Read `research_app/agent.py` alongside the diagram to understand the parallel
 branches, their join, and the follow-up and repair paths, then run one report
 in notebook section 3 and inspect its citations.
 
+After completing 1.1, check the supplied workflow:
+
 ```bash
 pytest tests/test_part1_agent.py tests/test_part1_citations.py tests/test_part1_llm.py tests/test_part1_trace_export.py
 ```
@@ -342,16 +344,25 @@ Build the prefix trees from events. An `alloc` event carries the block's
 so store them; an `evict` event carries only the block id. The tests call
 `choose_victim` with `view=None`, so do not read `view.blocks`.
 
+Leave `route_call` for 2.3. For the 2.2 experiments, set
+`balance_threshold=-1`; the supplied routing code uses the least-loaded replica.
+Run only the eviction tests here:
+
+```bash
+pytest tests/test_part2_prefix.py -k "not route"
+```
+
 ### 2.3 Cache-aware routing
 
 With two replicas, a prefix cached on one replica does not help a call sent to
 the other. Following the cache-aware policy of SGLang's router, implement
-`route_call` in the same file: among replicas whose `in_flight` is at most
-`balance_threshold` above the least loaded replica's, return the one with the
+`PrefixPolicy.route_call` in `policies/prefix_policy.py`: among replicas whose
+`in_flight` is at most `balance_threshold` above the least loaded replica's,
+return the one with the
 most cached blocks of the call's prompt (`view.num_cached_blocks`), breaking
 ties by lower `in_flight` and then lower replica id. With
 `balance_threshold = -1`, return the least loaded replica, as the reference
-does.
+does. Complete the remaining 2.3 TODO, then run the full test file:
 
 ```bash
 pytest tests/test_part2_prefix.py
@@ -413,6 +424,9 @@ least-loaded routing). See [the policy API](#the-policy-api).
   objective your system maximizes (`None` for an invalid candidate) and the
   feedback your agents see. The returned dict must keep `valid`, `violations`,
   `speedup`, and `by_family`, and add `objective`.
+
+The example starts from your completed `policies/reference.py` (2.1).
+For an earlier plumbing check, add `--start policies/fifo.py`.
 
 Check the plumbing offline before spending tokens:
 
@@ -492,7 +506,7 @@ S_f     = geometric mean over family f's traces of L(reference) / L(policy),  L 
 S       = geometric mean of S_f over the eight families
 g       = 1 - 1/S
 g_eff   = g - sum over families of max(0, 0.90 - S_f)
-credit  = clip(10 + 20 × g_eff / 0.09, 0, 30)   percent of the course grade
+credit  = clip(10 + 20 × g_eff / 0.09, 0, 30)   percent of the assignment grade
 ```
 
 | S (no family below 0.90) | 0.98 | 1.00 | 1.02 | 1.04 | 1.06 | 1.08 | 1.099 |

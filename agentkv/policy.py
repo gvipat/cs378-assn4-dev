@@ -85,9 +85,9 @@ class Policy:
         return running[-1]
 
     def route_call(self, view: "View", call: str, state: "State") -> int:
-        """Choose a replica for a ready call. The default chooses the shortest queue.
+        """Choose a replica for a ready call, defaulting to the fewest in-flight calls.
 
-        The assignment uses one replica in Part 2 and two in Part 3. Each has
+        Part 2 compares one and two replicas; Part 3 uses two. Each has
         its own cache. A dispatched call stays on that replica until it finishes.
         """
         return min(view.replicas, key=lambda r: (view.replicas[r].in_flight, r))
