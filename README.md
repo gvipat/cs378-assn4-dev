@@ -395,6 +395,8 @@ In this final part, you will build an automated research system in which LLM age
 
 ### What to build
 
+You should create your own `research/` directory and place your Part 3 code there. There is no starter code for this part.
+
 All policies in Part 3 are evaluated on **two replicas** (each with its own queue and KV cache) and scored relative to `policies/reference.py` (LRU eviction at `cap = 8` with least-loaded routing; see [The policy API](#the-policy-api)).
 
 1. **Build your research loop in** `research/`**:**
