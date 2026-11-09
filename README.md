@@ -14,6 +14,8 @@ CS 378: Systems for Generative AI, Fall 2026. Complete this assignment with your
 - [Grading](#grading)
 - [Acknowledgments](#acknowledgments)
 
+
+
 ## Overview
 
 Previously in [Assignment 3](../assignment3/README.md), we studied how an LLM serving engine schedules requests efficiently. We implemented techniques such as chunked prefill, request prioritization, and multi-replica routing, and measured their effects on latency and throughput. Those techniques focused on scheduling **individual** LLM requests.
@@ -30,6 +32,8 @@ Parts 2 and 3 run on a CPU simulator built on [Vidur](https://github.com/microso
 
 - **Concurrency and dispatch:** A **job** (such as generating a research report) consists of dependent LLM and tool calls. Once a call's dependencies finish, it enters **ready calls**. Your policy controls how many calls can be in flight (`target_concurrency`), which ready call is dispatched next (`dispatch_order`), and which GPU replica receives it (`route_call`).
 - **Replica scheduling and KV-cache management:** Each replica maintains its own waiting queue, mixed prefill/decode batch, and KV cache. Your policy controls admission order (`admission_order`), batch token budget (`batch_token_budget`), preemption under memory pressure (`choose_preempted`), and cached block eviction (`choose_victim`), while observing system events through `on_event`.
+
+
 
 ## Setup
 
@@ -60,66 +64,118 @@ We will update this section with details of Bedrock LLM API access.
 
 [Notebook](notebooks/part1_deep_research.ipynb)
 
-In this part, you will run a LangGraph research agent on 16 questions and measure the workload it sends to an inference engine: which operations determine each report's latency, how much prompt content repeats and for how long, and how much KV memory concurrency costs.
+In this part, you will run a LangGraph-based deep research agent on 16 questions and characterize the workload it generates for an inference engine. Specifically, you will measure:
+
+- **Critical-path latency:** which LLM calls and tool invocations actually determine each report's end-to-end completion time.
+- **Prefix reuse:** how much prompt content is repeated across calls, and how long cached KV blocks must stay in memory to be reused.
+- **Concurrency vs. memory:** how bounding concurrent LLM calls trades queueing delay against peak KV-cache memory footprint.
+
+
 
 ### The agent
 
 ![The deep research graph: plan, parallel research branches, coverage check, optional follow-up, synthesize, validate, optional repair.](docs/figures/research_workflow.svg)
 
-For each question, the agent gathers evidence and uses it to write a report:
+For each question, the agent gathers evidence from a local corpus and synthesizes a cited report in five stages:
 
-1. **Plan the research.** One LLM call breaks the question into two to four subtopics and proposes a search query for each.
-2. **Research the subtopics in parallel.** Each subtopic runs as a separate branch. A branch searches the local corpus, fetches up to three matching documents in parallel, and sends the documents to the LLM to extract relevant quotes. The quotes and their source information become the evidence for the report.
-3. **Check for missing evidence.** After all branches finish, the agent checks whether each subtopic has evidence. If any are missing evidence, it researches the first one again with a broader query. This follow-up runs at most once, then the agent proceeds with the evidence it has.
-4. **Write the report.** One LLM call combines the evidence into a report. Each claim cites evidence IDs that link it to the collected quotes.
-5. **Check the citations.** The checker verifies that every claim cites known evidence and that each quote matches its source. If checks fail, the model gets at most one repair attempt, followed by a final check. These checks verify citation integrity, not whether a quote supports a claim.
+1. **Plan (`plan`):** One LLM call breaks the question into two to four subtopics and proposes a search query for each.
+2. **Research subtopics in parallel (`research_subtopic`):** Each subtopic runs as a parallel branch. A branch searches the local corpus, fetches up to three matching documents concurrently, and makes one LLM call (`extract`) to pull relevant verbatim quotes. These quotes and their source metadata form the evidence pool.
+3. **Check coverage (`coverage` / `followup`):** Once all branches finish, the agent checks whether every subtopic gathered at least one piece of evidence. If any subtopic has no evidence, the agent re-researches the first missing subtopic once with a broader query before moving on.
+4. **Synthesize (`synthesize`):** One LLM call combines the collected evidence into a structured report where every claim cites supporting evidence IDs.
+5. **Validate and repair (`validate` / `repair`):** A checker verifies citation integrity, confirming that every claim cites valid evidence IDs and that every quoted span appears in its source document. If validation fails, the agent makes at most one `repair` LLM call followed by a final check.
 
-The tracing client limits each report to 8 LLM calls, 5 searches, and 15 fetches, and each operation to 3 attempts.
+To bound cost on misbehaving runs, the tracing client caps each report at 8 LLM calls, 5 searches, and 15 document fetches, with at most 3 attempts per operation.
 
-#### LangGraph concepts
+#### LangGraph 101
 
-See the [LangGraph documentation](https://langchain-ai.github.io/langgraph/) for more.
+The agent workflow in `research_app/agent.py` is built using five core [LangGraph](https://langchain-ai.github.io/langgraph/) primitives:
 
-- **State** is a dict that flows through the graph (`ReportState` in `research_app/agent.py`). A node is `async def node(state, config) -> dict` and returns only the keys it changes.
-- **Edges**: `g.add_edge("synthesize", "validate")` runs `validate` after `synthesize`.
-- **Conditional edges**: `g.add_conditional_edges("coverage", route_coverage, ["followup", "synthesize"])` calls `route_coverage(state)` and goes to the node it names.
-- **Fan-out**: a routing function returns a list of `Send("research_subtopic", payload)`, and LangGraph runs `research_subtopic` once per `Send`, in parallel. `branches` is declared `Annotated[list[BranchResult], operator.add]`, so each branch returns a one-element list and LangGraph concatenates them.
-- **Join**: `g.add_edge("research_subtopic", "coverage")` runs `coverage` once, after every branch finishes.
+- **State:** A shared dictionary (`ReportState` in `research_app/agent.py`) that flows through the graph. Each node receives the current `state` (and, for `async` nodes that call tools or the LLM, `config`) and returns a `dict` containing only the keys it updates.
+- **Edges:** `g.add_edge("synthesize", "validate")` unconditionally runs `validate` after `synthesize`.
+- **Conditional edges:** `g.add_conditional_edges("coverage", route_coverage, ["followup", "synthesize"])` calls `route_coverage(state)` to decide which node runs next.
+- **Fan-out (`Send`):** A routing function can return a list of `Send("research_subtopic", payload)` objects to launch multiple parallel instances of `research_subtopic`. Because `branches` is annotated with `Annotated[list[BranchResult], operator.add]`, each branch returns a one-element list and LangGraph automatically concatenates the results.
+- **Join:** `g.add_edge("research_subtopic", "coverage")` waits for all parallel `research_subtopic` branches to complete before running `coverage` once.
 
 ### 1.1 Concurrency limiter
 
-All 16 reports share one cap C on concurrent LLM calls, enforced by `ConcurrencyLimiter` in `research_app/concurrency.py`. Complete its `acquire`, `release`, and `set_limit` methods. A call keeps its slot through retries, and tool calls do not take slots. Lowering the limit lets running calls finish, and raising it must wake waiting calls. Use the supplied condition lock so concurrent acquisitions cannot take the same slot. Cancellation while waiting must leave `_in_flight` unchanged. Releasing without a held slot raises `RuntimeError`. The supplied range check restricts the cap to 1–8.
+When all 16 reports run concurrently, they share a single global concurrency cap `C` on in-flight LLM calls. The tracing client acquires a slot before each LLM call (holding that slot across any retries) and does not acquire slots for search or fetch tool calls.
+
+This cap is enforced by `ConcurrencyLimiter` in `research_app/concurrency.py`, which wraps an `asyncio.Condition` (`self._cond`) and tracks the cap (`self._limit`, restricted to 1–8) and the number of active calls (`self._in_flight`).
+
+Complete its three methods:
+
+- **`acquire()`:** Wait until `_in_flight < _limit`, then increment `_in_flight` while still holding the condition lock so concurrent callers cannot claim the same slot. If a waiting task is cancelled before acquiring a slot, `_in_flight` must remain unchanged.
+- **`release()`:** Decrement `_in_flight` under the condition lock and notify waiting tasks. If `release()` is called when `_in_flight == 0`, raise a `RuntimeError`.
+- **`set_limit(limit)`:** Update `_limit` (the 1–8 range check is already provided) under the condition lock and wake any waiting tasks so they can re-check the cap if the limit increased. If the limit is lowered below the current `_in_flight`, do not cancel or interrupt running calls—let them finish naturally and allow waiting calls to proceed only once `_in_flight` drops below the new `_limit`.
+
+Test your implementation:
 
 ```bash
 pytest tests/test_part1_concurrency.py
 ```
 
+
+
 ### 1.2 Research graph
 
-The workflow in `research_app/agent.py` is supplied; you do not need to modify it, and your understanding of it will be assessed in the grading interview. Read `research_app/agent.py` alongside the diagram to understand the parallel branches, their join, and the follow-up and repair paths, then run one report in notebook section 3 and inspect its citations.
+The agent workflow in `research_app/agent.py` is already implemented for you—you do not need to modify it, though we will ask you about how it works during the grading interview.
 
-After completing 1.1, check the supplied workflow:
+1. Read `research_app/agent.py` alongside the workflow diagram above to trace how parallel subtopic branches fan out and join, and how the follow-up and citation-repair paths work.
+2. In Section 3 of `notebooks/part1_deep_research.ipynb`, run a single report and inspect its generated markdown and citations.
+3. Run the workflow test suite to verify that the agent, citation checker, and trace exporter pass with your concurrency limiter:
 
 ```bash
 pytest tests/test_part1_agent.py tests/test_part1_citations.py tests/test_part1_llm.py tests/test_part1_trace_export.py
 ```
 
+
+
 ### 1.3 Workload analysis
 
-Implement the four functions in `research_app/analysis.py` (used by the plots in notebook section 5 after you generate the runs in section 4). `critical_path` takes a run loaded with `load_run("runs/c2")`; the other three take `run.llm_calls()`, the run's completed LLM calls in start order. Each `Op` records an operation's dependencies, times, slot wait, token counts, and `block_hashes`.
+Next, implement the four workload analysis functions in `research_app/analysis.py`. You will use these functions in Section 5 of the notebook to plot and analyze the traces recorded in Section 4.
 
-- `critical_path(run, report)` returns the operations that determined when the report finished. Start from its latest-ending operation (ties: larger `op_id`) and repeatedly step to the dependency that ended last (same tie-break). Ignore dependencies absent from the run and raise `KeyError` for an empty report. Each `Step` splits its share of the latency into `gap` (from its blocking dependency's end, or the report's arrival, to its start), `wait` (for an LLM slot), and `service` (the rest, including retries). The steps add up to the report's latency.
-- `prefix_hit_rate(calls)` is the fraction of prompt tokens in full 256-token blocks whose block hash appeared in an earlier call: the hit rate of an unbounded prefix cache. Count hits before adding the current call's hashes to the history. Divide shared tokens by all prompt tokens, including the final partial block; return 0.0 for zero prompt tokens.
-- `reuse_intervals(calls)` gives, for each reuse of a block, how long the block sat unused: the reusing call's start minus the latest end of the earlier calls that held it, or 0 if one of them is still running. Return one `Reuse` per block per call, with `stage` from the reusing call and `source` from the latest-ending earlier call.
-- `kv_footprint(calls)` gives the KV bytes held by the LLM calls holding a slot, at every time that changes, both with each call storing its own blocks (`private`) and with identical full blocks stored once (`shared`). Use 128 KiB per token (Llama-3-8B in bf16). Evaluate each distinct `slot_acquired` and `end` time, counting a call when `slot_acquired <= t < end`. Private storage includes prompt and output tokens; shared storage deduplicates full prefix blocks and adds each call's partial block and output separately.
+A recorded trace is loaded via `run = load_run("runs/c2")`. Each recorded operation is represented by an `Op` object containing its dependencies (`deps`), timestamps (`start`, `end`, `slot_requested`, `slot_acquired`), token counts (`prompt_tokens`, `output_tokens`), and 256-token prefix `block_hashes`.
+
+- **`critical_path(run, report) -> list[Step]`**  
+  Finds the chain of operations that determined when `report` finished, returned in chronological order from first to last.
+  - **Backward walk:** Start at the operation in `report` with the latest `end` time (breaking ties by larger `op_id`). Repeatedly step to whichever of its dependencies in `run.ops` finished last (using the same tie-breaker), ignoring any dependency IDs not present in `run.ops`, until you reach an operation with no dependencies in the run. Raise `KeyError` if the report has no operations.
+  - **Latency breakdown:** Convert each operation on the path into a `Step(op_id, kind, stage, gap, wait, service)`, where:
+    - `gap` is the time between the blocking dependency's `end` (or the report's arrival time `run.arrivals[report]` for the first step) and this operation's `start`;
+    - `wait` is the time spent waiting for an LLM concurrency slot (`op.slot_wait`, which is `0.0` for tools);
+    - `service` is the remaining duration of the operation (`op.end - op.start - wait`), including any retries.  
+    Across the returned steps, the sum of `gap + wait + service` equals the report's end-to-end latency.
+- **`prefix_hit_rate(calls, block_size=256) -> float`**  
+  Computes the fraction of all prompt tokens across `calls` (passed in start order via `run.llm_calls()`) that would hit in an unbounded prefix cache.
+  - A full 256-token block in a call's `block_hashes` counts as a cache hit (contributing `block_size` shared tokens) if its hash appeared in an earlier call in `calls`.
+  - Check a call's blocks against the history of previously seen hashes *before* adding that call's hashes to the history.
+  - Divide the total shared tokens by the sum of `prompt_tokens` across all calls (which includes trailing partial blocks). Return `0.0` if total `prompt_tokens` is zero.
+- **`reuse_intervals(calls) -> list[Reuse]`**  
+  Measures, for each reuse of a prefix block, how long that block would have sat unreferenced between the end of the last earlier call holding it and the start of the reusing call (or `0.0` if an earlier holder is still running).
+  - Process `calls` in start order, treating each call as holding its blocks from `call.start` to `call.end`.
+  - Whenever a block hash in `call.block_hashes` was already seen in at least one earlier call, emit one `Reuse(block, stage, source, interval)` (at most once per distinct block in the current call):
+    - `stage` is the current (reusing) call's stage;
+    - `source` is the stage of the earlier holder with the latest `end` time;
+    - `interval` is `call.start` minus that latest `end` time, or `0.0` if an earlier holder is still running at `call.start`.
+- **`kv_footprint(calls, bytes_per_token=..., block_size=256) -> list[Footprint]`**  
+  Computes the time series of KV-cache memory held by active LLM calls, comparing private storage against shared-prefix storage.
+  - An LLM call occupies KV memory during `[slot_acquired, end)`, holding `prompt_tokens + output_tokens` tokens (at 128 KiB per token by default for Llama-3-8B in bf16).
+  - Evaluate the footprint at every distinct `slot_acquired` and `end` timestamp across `calls` in ascending order. At timestamp `t`, a call is active if `slot_acquired <= t < end`.
+  - At each timestamp `t`, record a `Footprint(t, calls, private, shared)`:
+    - `calls`: the number of active LLM calls holding a slot at time `t`.
+    - `private`: total KV bytes if every active call stores all of its `prompt_tokens + output_tokens` independently.
+    - `shared`: total KV bytes if identical full prefix blocks (`block_hashes`) are stored only once across all active calls, while each call's remaining tokens (its trailing partial prompt block plus `output_tokens`) are stored separately.
+
+Test your analysis functions:
 
 ```bash
 pytest tests/test_part1_analysis.py
 ```
 
+
+
 ### 1.4 Runs and questions
 
-Run the 16 public questions three times, one report starting every 2 seconds:
+Generate three workload traces over the 16 public questions (with one report arriving every 2 seconds):
 
 ```bash
 python -m research_app.run --cap 2 --replay --out runs/c2
@@ -127,115 +183,154 @@ python -m research_app.run --cap 8 --replay --out runs/c8
 python -m research_app.run --cap 8 --failure-rate 0.2 --replay --out runs/c8-faults
 ```
 
-These commands use the offline `FakeLLM`, which is sufficient for Part 1. Record your backend and use the same one for all three runs. To use Bedrock, set `AGENTKV_BEDROCK_MODEL` and add `--backend bedrock`. `--failure-rate 0.2` makes each tool attempt fail with probability 0.2. Every run must print `16/16 valid`. Each run writes `trace.jsonl`, `reports.json`, `summary.json`, and `replay.json` (the run as a trace the simulator can replay). Bedrock does not expose its KV cache, so `block_hashes` are computed locally over 256-token blocks and show potential reuse.
+- **LLM backend:** By default, these commands use the deterministic offline `FakeLLM`, which is sufficient for Part 1. To use Bedrock instead, set `AGENTKV_BEDROCK_MODEL` and pass `--backend bedrock`. Use the same backend for all three runs and state which one you used in your report.
+- **Fault injection:** `--failure-rate 0.2` causes each search or fetch tool attempt to fail transiently with 20% probability.
+- **Outputs:** Every run must finish with `16/16 valid`. Each run directory saves `trace.jsonl`, `reports.json`, `summary.json`, and `replay.json` (a simulator-compatible trace of the run). Because Bedrock does not expose internal KV-cache state, `block_hashes` are always computed locally over 256-token prompt blocks to measure potential prefix reuse.
 
-The notebook plots your analysis and replays your C = 8 run in the simulator at caps (1, 2, 4, 8, 16) and KV capacities of (12,288, 16,384, 49,152, 393,216) tokens, using `policies/fifo.py` on one replica, then replays caps 4–8 at 16,384 tokens. Answer Q1–Q4 with numbers from your runs.
+In Section 5 of `notebooks/part1_deep_research.ipynb`, run the cells to plot your workload analysis and replay `runs/c8/replay.json` in the Vidur simulator on one A100 replica with `policies/fifo.py` across caps `(1, 2, 4, 8, 16)` and KV capacities of `(12,288, 16,384, 49,152, 393,216)` tokens (plus a finer sweep of caps 4–8 at 16,384 tokens). Use your plots and numbers to answer **Q1–Q4** in `assignment4_report.pdf`.
 
 **Q1. Critical path.**
 
-- For one C = 2 report, show its DAG with the critical path, and give the seconds of gap, slot wait, LLM service, and tool service on the path.
-- Give the same breakdown averaged over all reports at C = 2 and at C = 8. Why does the bottleneck shift between C = 2 and C = 8?
-- At C = 8, each report runs its subtopic branches in parallel (`Send`) and fetches up to three documents in parallel (`asyncio.gather`). From your trace, how many seconds per report would the critical path grow if subtopics ran sequentially, and how much if fetches within a branch ran sequentially? Which single change to the agent workflow or output length would shorten the C = 8 critical path most, and by roughly how much? (You do not need to implement it.)
+- For one report from `runs/c2`, include its DAG plot showing the critical path and report the time (in seconds) spent in `gap`, `wait` (slot wait), LLM `service`, and tool `service` along that path.
+- Report the same four-way breakdown averaged across all 16 reports at C = 2 and at C = 8. Why does the primary bottleneck shift between C = 2 and C = 8?
+- At C = 8, each report fans out its subtopic branches in parallel (`Send`) and fetches up to three documents per branch in parallel (`asyncio.gather`). Based on your trace, by how many seconds per report would the critical path grow if subtopics instead ran sequentially? How much if document fetches within each branch ran sequentially? Which single change to the agent workflow or output length would reduce the C = 8 critical path the most, and by roughly how much? (No implementation needed.)
 
 **Q2. Prefix reuse.**
 
-- Report `prefix_hit_rate` overall and per stage (as notebook section 5b computes it) at C = 8, and name the prompt content each stage reuses. How does the overall rate change at C = 2, and why? Why is `extract`, which accounts for the most prompt tokens, the stage with the lowest hit rate?
-- At C = 8, for each stage that reuses blocks, give the fraction of reuses with `interval == 0` (an earlier call holding the block had not finished), the 90th-percentile interval, and the maximum interval. Why are most reuse intervals zero, and what creates the multi-second tail in `extract`? C = 2 reports more zero intervals than C = 8, even though fewer calls run at once. Why?
-- Which full prefix blocks in this workload would a cache never reuse, and why?
+- At C = 8, report `prefix_hit_rate` overall and broken down by stage (from notebook Section 5b), and identify what prompt content each stage is reusing. How and why does the overall hit rate change at C = 2? Why does `extract`—which accounts for the largest share of prompt tokens—have the lowest hit rate?
+- At C = 8, for each stage that reuses blocks, report the fraction of reuses with `interval == 0` (where an earlier holder is still running), the 90th-percentile reuse interval, and the maximum reuse interval. Why are most reuse intervals zero, and what produces the multi-second tail in `extract`? Why does C = 2 have a higher fraction of zero reuse intervals than C = 8, even though fewer calls run concurrently?
+- Which full 256-token prefix blocks in this workload can never be reused by a prefix cache, and why?
 
 **Q3. Concurrency and memory.**
 
-- Fill in this table:
+- Complete the comparison table from your C = 2 and C = 8 runs:
 
   |       | Mean report latency | Makespan | Mean slot wait | Peak concurrent LLM calls | Peak KV, no sharing | Peak KV, prefix sharing |
   | ----- | ------------------- | -------- | -------------- | ------------------------- | ------------------- | ----------------------- |
   | C = 2 |                     |          |                |                           |                     |                         |
   | C = 8 |                     |          |                |                           |                     |                         |
 
-- On the notebook's caps, latency falls or levels off at 49,152 and 393,216 KV tokens but rises above C = 4 at 12,288. Explain why using `preemptions`, `recomputed_tokens`, and `evictions`. What does your curve do at 16,384, and what does that imply about setting a cap near the memory limit?
-- On one 80 GB A100 with 16 GB of Llama-3-8B weights, which cap would you choose for this workload, and how much KV memory would remain free at its peak? If you instead served this workload inside a 2 GB KV budget (16,384 tokens), which of caps 4–8 would you choose and why?
+- In the simulator replay sweep, mean report latency decreases or flattens with higher C at 49,152 and 393,216 KV tokens, but increases above C = 4 at 12,288 tokens. Explain why using the simulator's `preemptions`, `recomputed_tokens`, and `evictions` metrics. How does the latency curve behave at 16,384 tokens, and what does this imply about choosing a concurrency cap near the KV memory limit?
+- On a single 80 GB A100 with 16 GB occupied by Llama-3-8B weights, which concurrency cap would you pick for this workload, and how much KV memory would remain free at peak usage? If you instead had to serve this workload within a 16,384-token KV budget (2 GiB, ~2.15 GB), which cap in 4–8 would you choose, and why?
 
 **Q4. Failures.**
 
-- Compare `runs/c8-faults` with `runs/c8`: count retried operations, follow-up branches, and repairs. Why does every follow-up and repair lie on a critical path? In `runs/c8-faults`, what fraction of all tool operations lie on a critical path, and what fraction of retried tool operations do? Why do the two differ?
-- Give the median and maximum report latency of both runs.
-- In `TracingClient.llm_call`, an LLM call keeps its concurrency slot while sleeping during retry backoff. At C = 2, when would releasing the slot during backoff hurt vs. help mean report latency (considering both your C = 2 slot waits and what happens to a call's KV blocks if another call takes its slot under tight memory)?
+- Compare `runs/c8-faults` against `runs/c8`: report the total number of retried operations, follow-up branches, and repair calls. Why does every follow-up branch and repair call appear on its report's critical path? In `runs/c8-faults`, what fraction of *all* tool operations lie on a critical path versus what fraction of *retried* tool operations lie on a critical path, and why do those two fractions differ?
+- Report the median and maximum report latency for both `runs/c8` and `runs/c8-faults`.
+- In `TracingClient.llm_call`, an LLM call holds onto its concurrency slot while sleeping during retry backoff. At C = 2, under what conditions would releasing the slot during backoff hurt vs. help mean report latency? (Consider both your C = 2 slot wait times and what happens to a call's cached KV blocks if another call takes its slot under tight memory.)
+
+
 
 ### Optional: research on the live web
 
-After the required work, notebook section 6 runs the same agent with live web search (Exa, Tavily, Perplexity, or OpenAI) instead of the local corpus. It is not graded.
+After finishing the required tasks, you can use Section 6 of the notebook to run the research agent against live web search (via Exa, Tavily, Perplexity, or OpenAI) instead of the offline Wikipedia corpus. This section is ungraded.
 
 ## Part 2: KV-cache eviction and routing
 
 [Notebook](notebooks/part2_lru_policy.ipynb)
 
-An inference engine can keep a finished call's KV blocks so that a later call with the same prompt prefix skips prefill. Those cached blocks, however, take memory that running calls need. In this part, you will implement three policies for the simulated engine: LRU eviction, which becomes the reference for Part 3; eviction that keeps prefix trees reusable; and routing that trades cache hits against load across two GPUs.
+An inference engine can retain a finished call's KV-cache blocks in GPU memory so that later calls sharing the same prompt prefix can skip prefill computation. However, cached blocks consume memory that active calls also need. In this part, you will implement and evaluate three core mechanisms in the simulated serving engine:
+
+1. **LRU eviction (`policies/reference.py`):** The baseline eviction policy that serves as the reference for Part 3.
+2. **Prefix-aware eviction (`policies/prefix_policy.py`):** A tree-aware eviction policy that evicts leaves first so shared prefix chains remain usable.
+3. **Cache-aware routing (`policies/prefix_policy.py`):** A two-replica router that balances prefix-cache affinity against queue load across GPUs.
+
+
 
 ### The simulator
 
-Each trace fixes a workload of 16 jobs. A job is a DAG of LLM calls and tool delays with fixed prompts, output lengths, and arrival times. The simulator replays a trace on Llama-3-8B running on one or two A100s, using Vidur's vLLM V1 scheduler (which mixes prefill and decode in a batch) and Vidur's timing predictions from A100 profiling data. Each GPU, or *replica*, has its own queue and KV cache. The traces cover eight workload families:
+Each evaluation trace represents a workload of 16 jobs across one of eight agentic workload families:
 
 ![The eight workload families.](docs/figures/families.svg)
 
-A job's **latency** is the time from its arrival until its last call or tool finishes. On a trace, a policy's **speedup** is the reference's mean job latency divided by the policy's; `score()` combines speedups across the eight families (see [Scoring](#scoring)).
+- **Jobs and traces:** Each job is a DAG of LLM calls and tool delays with fixed prompts, output lengths, and arrival times. The simulator replays traces on Llama-3-8B across one or two A100 GPUs (*replicas*), using Vidur's vLLM V1 scheduler (which mixes prefill and decode tokens in each batch) and timing predictions derived from A100 profiling data. Each replica maintains its own request queue and KV cache.
+- **Latency and speedup:** A job's **latency** is the elapsed time from its arrival until its final LLM call or tool step completes. On a given trace, a policy's **speedup** is the reference policy's mean job latency divided by the policy's mean job latency; `score()` aggregates these speedups across all eight workload families (see [Scoring](#scoring)).
 
-As in vLLM's prefix caching, KV memory is a pool of 16-token blocks, and each full block of a prompt is identified by a `block_hash` of its tokens and every token before it. A block is in one of three states:
 
-- *active*: a running call holds it (`ref_cnt > 0`);
-- *cached*: no call holds it, but its contents stay in memory in case a later prompt starts the same way;
-- *empty*.
+
+#### Prefix caching and block states
+
+Following vLLM's prefix caching design, KV memory on each replica is partitioned into a pool of 16-token blocks. Each full 16-token block of a prompt is identified by a cumulative `block_hash` computed over its tokens and all preceding tokens in the prompt. At any time, each physical block slot is in one of three states:
+
+- **active:** currently held by at least one running call (`ref_cnt > 0`);
+- **cached:** unreferenced (`ref_cnt == 0`), but its contents remain in memory in case a future prompt shares the same prefix;
+- **empty:** holds no reusable data.
 
 ![Three prompts cut into 16-token blocks, and the tree of shared prefixes those blocks form in memory.](docs/figures/kv_prefix.svg)
 
-A new block takes an empty slot if one exists; otherwise, the engine overwrites a cached block that your policy chooses. Each trace's memory is sized to its working set, so eviction matters. A cached block is reused only if every block before it in the prompt is also cached.
+When a running call needs a new block, the engine uses an empty slot if one is available; otherwise, it calls your policy's `choose_victim` hook to select a cached block to overwrite. Each trace's KV capacity is sized to its active working set so that eviction choices directly affect performance. Crucially, **a resident block can be reused only if every preceding block in the prompt is also resident (active or cached) on that replica.**
 
 ### The policy API
 
-A policy is a class in one file. Two hooks are required, and the others default to the reference behavior.
+A policy is defined as a `Policy` subclass in a single Python file. Two hooks (`target_concurrency` and `choose_victim`) are required; all other hooks default to the reference behavior.
 
-| Hook                                     | Returns                                                                              | Default                  |
-| ---------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------ |
-| `on_event(event, state)`                 | nothing; observes every event (fields in `agentkv.policy.EVENT_FIELDS`)              | ignore                   |
-| `target_concurrency(view, state)`        | the most calls in flight across all replicas, 1–16                                   | required                 |
-| `choose_victim(view, candidates, state)` | one id from `candidates`, the cached blocks on `view.replica`, oldest-released first | required                 |
-| `dispatch_order(view, ready, state)`     | ready call ids to dispatch, in order (any subset)                                    | oldest first             |
-| `route_call(view, call, state)`          | the replica for a dispatched call                                                    | fewest calls in flight   |
-| `admission_order(view, waiting, state)`  | `waiting` reordered; the engine admits from the front while calls fit                | first come, first served |
-| `batch_token_budget(view, state)`        | 512, 1024, 2048, or 4096 tokens for the next batch on `view.replica`                 | 2048                     |
-| `choose_preempted(view, running, state)` | the running call that gives its blocks back when memory runs out                     | `running[-1]`            |
 
-`view` is a read-only snapshot of the engine (`agentkv.policy.View`). It holds memory and queue counts, in total and per replica; the ready and in-flight calls, each with its job, stage, prompt length, and `block_hashes`; every resident block, with its `block_hash`, `parent_hash`, replica, and `ref_cnt`; and the live jobs. `view.num_cached_blocks(call, r)` counts the leading blocks of a call's prompt that are resident on replica `r`. `state` is a dict for your own data, and `state.rng` is the only allowed source of randomness. Ids are opaque and differ between traces.
+| Hook                                     | Returns                                                                                 | Default                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------ |
+| `on_event(event, state)`                 | nothing; observes every engine event (fields in `agentkv.policy.EVENT_FIELDS`)          | ignore                   |
+| `target_concurrency(view, state)`        | maximum calls in flight across all replicas (`1`–`16`)                                  | *required*               |
+| `choose_victim(view, candidates, state)` | one block id from `candidates` (cached blocks on `view.replica`, oldest-released first) | *required*               |
+| `dispatch_order(view, ready, state)`     | ready call ids to dispatch, in desired order (may return any subset)                    | oldest first             |
+| `route_call(view, call, state)`          | target replica id for a dispatched call                                                 | fewest calls in flight   |
+| `admission_order(view, waiting, state)`  | `waiting` call ids reordered; the engine admits from the front while blocks fit         | first come, first served |
+| `batch_token_budget(view, state)`        | `512`, `1024`, `2048`, or `4096` tokens for the next batch on `view.replica`            | `2048`                   |
+| `choose_preempted(view, running, state)` | one running call id to preempt (releasing its blocks) when memory runs out              | `running[-1]`            |
 
-One policy instance and its state are shared across replicas. Replica-specific hooks receive `view.replica`, so your policy can maintain separate state and use different strategies for each replica.
 
-Policies run in a sandbox with 50 ms of CPU per hook call and 4 MiB of state; see [Policy rules](#policy-rules).
+- **`view` (`agentkv.policy.View`):** A read-only snapshot of the engine passed to decision hooks. It exposes:
+  - Total and per-replica memory and queue counts (`view.replicas`);
+  - Ready calls (`view.ready`) and in-flight calls (`view.calls`), each with its job id, stage, prompt length, and `block_hashes`;
+  - Resident prefix blocks (`view.blocks`), each with its `block_hash`, `parent_hash`, `replica`, and `ref_cnt`;
+  - Active jobs (`view.jobs`);
+  - `view.num_cached_blocks(call, r)`, which counts how many leading full blocks of `call`'s prompt are currently resident on replica `r`.
+- **`state` (`agentkv.policy.State`):** A mutable dictionary persisted across hook calls within a single trace (reset between traces). Use `state.rng` as your only source of randomness. Block, call, and job IDs are opaque and vary across traces.
+- **Multi-replica state:** A single policy instance and `state` dict are shared across all replicas. Engine-level hooks (`choose_victim`, `admission_order`, `batch_token_budget`, `choose_preempted`) set `view.replica` to identify which replica is requesting a decision.
+- **Sandbox limits:** Policies execute in a restricted sandbox with a 50 ms CPU limit per hook call and a 4 MiB serialization limit on `state` plus policy attributes (see [Policy rules](#policy-rules)).
+
+You can score policies from the command line or from Python:
 
 ```bash
 python -m agentkv.score --policy policies/prefix_policy.py --split public_dev --params '{"balance_threshold": 2}'
 python -m agentkv.score --policy policies/reference.py --split public_dev --replicas 1 --params '{"cap": 4}'
 ```
 
-`score()` uses two replicas unless you pass `replicas=1`, and `viz.record` uses one unless you pass `replicas=2`. `score()` scores traces in parallel on all but one CPU (at most 12; set `AGENTKV_WORKERS` to change this), so call it from a notebook or from a script under `if __name__ == "__main__":`.
+By default, `score()` simulates **two replicas** (pass `replicas=1` for single-replica experiments), whereas `viz.record` simulates **one replica** (pass `replicas=2` for two-replica timelines). Because `score()` evaluates traces in parallel across CPU cores (up to 12 workers; override with `AGENTKV_WORKERS`), always invoke it from a notebook cell or inside an `if __name__ == "__main__":` guard.
 
 ### 2.1 LRU
 
-Complete `__init__`, `on_event`, and `choose_victim` in `policies/reference.py`. An `alloc` or `hit` event makes a block the most recently used; a `release` does not, and an `evict` removes it. `choose_victim` returns the least recently used block among `candidates`. Because several events can share a timestamp, track recency in event order rather than by time. `target_concurrency` already returns the `cap` parameter (default 8).
+Complete `__init__`, `on_event`, and `choose_victim` in `policies/reference.py` (`target_concurrency` is already implemented and returns `self.cap`, which defaults to 8):
+
+- **Tracking recency (`on_event`):** Maintain the recency order of resident blocks across events:
+  - `alloc` and `hit` events mark `event.block` as the most recently used block.
+  - `release` events do *not* count as accesses and must not update recency.
+  - `evict` events remove `event.block` from your tracking state.
+  - Because multiple events from the same GPU batch can share a timestamp `event.t`, track recency strictly by **event delivery order** rather than by timestamp.
+- **Selecting a victim (`choose_victim`):** Return the least recently used block ID among `candidates`. Note that your recency structure may also contain currently active blocks (`ref_cnt > 0`), so only consider block IDs present in `candidates` (and do not rely on `candidates[0]`, which is ordered by release time rather than last access).
+
+Run the LRU unit tests and the reference verification test:
 
 ```bash
 pytest tests/test_part2_lru.py tests/test_reference_results.py
 ```
 
-The second test takes a few minutes and checks that your file reproduces the staff reference's job latencies exactly on both public splits. Scoring always compares against the staff copy, so you can score other policies before you finish this file.
+`test_reference_results.py` takes a few minutes and verifies that your `policies/reference.py` reproduces the staff reference's exact job latencies on both public splits. Note that `score()` compares against frozen staff reference latencies (`agentkv/data/vidur_reference.json`), so you can score other policies even before finishing 2.1.
 
 ### 2.2 Prefix-aware eviction
 
 ![Evicting a root prevents reuse of its descendants; evicting a tail preserves the remaining prefix.](docs/figures/evict_tail.svg)
 
-A call touches its prompt's blocks from root to tail, so LRU sees the root of a prefix as the least recently used block, and evicting it strands every block after it. Complete `__init__`, `on_event`, and `choose_victim` in `policies/prefix_policy.py` so that `choose_victim` returns the least recently used candidate that is a *leaf*, or the least recently used candidate if none is. A candidate is a leaf if no resident block on its replica has a `parent_hash` equal to the candidate's `block_hash`. With `leaf_first=False`, the policy is plain LRU.
+When a call runs, it accesses its prompt blocks sequentially from root to tail. Under plain LRU, the root block of a shared prefix appears *least* recently used—and evicting that root immediately makes every descendant block after it unusable.
 
-Build the prefix trees from events. An `alloc` event carries the block's `block_hash`, `parent_hash` (`None` for a prompt's first block), and `replica`, so store them; an `evict` event carries only the block id. The tests call `choose_victim` with `view=None`, so do not read `view.blocks`.
+Complete `__init__`, `on_event`, and `choose_victim` in `policies/prefix_policy.py` to implement leaf-first LRU eviction:
 
-Leave `route_call` for 2.3. For the 2.2 experiments, set `balance_threshold=-1`; the supplied routing code uses the least-loaded replica. Run only the eviction tests here:
+- **Eviction rule (`choose_victim`):** When `self.leaf_first` is `True` (the default), return the least recently used block in `candidates` that is currently a **leaf** of its replica's prefix tree; if no candidate is a leaf, fall back to the least recently used candidate overall. When `self.leaf_first` is `False`, behave identically to plain LRU.
+- **Definition of a leaf:** A candidate block is a leaf if no currently resident block on the same replica has a `parent_hash` equal to the candidate's `block_hash`. Once all of a block's resident children on that replica have been evicted, the block itself becomes a leaf.
+- **Maintaining prefix trees from events (`on_event`):** Build and update the prefix tree structure using `on_event` rather than reading `view.blocks` (the unit tests invoke `choose_victim` with `view=None`):
+  - On `alloc`, record the block's `block_hash`, `parent_hash` (`None` for the first block of a prompt), and `replica`, in addition to updating its recency.
+  - On `hit`, update the block's recency.
+  - On `evict` (which carries only `event.block`), remove the block from both your recency state and its replica's prefix tree.
+
+Leave `route_call` for Section 2.3 (for the 2.2 experiments, pass `balance_threshold=-1` so the supplied fallback routes to the least-loaded replica). Run the eviction tests:
 
 ```bash
 pytest tests/test_part2_prefix.py -k "not route"
@@ -243,54 +338,71 @@ pytest tests/test_part2_prefix.py -k "not route"
 
 ### 2.3 Cache-aware routing
 
-With two replicas, a prefix cached on one replica does not help a call sent to the other. Following the cache-aware policy of SGLang's router, implement `PrefixPolicy.route_call` in `policies/prefix_policy.py`: among replicas whose `in_flight` is at most `balance_threshold` above the least loaded replica's, return the one with the most cached blocks of the call's prompt (`view.num_cached_blocks`), breaking ties by lower `in_flight` and then lower replica id. With `balance_threshold = -1`, return the least loaded replica, as the reference does. Complete the remaining 2.3 TODO, then run the full test file:
+With two GPU replicas, a prefix cached on replica 0 does not benefit a call dispatched to replica 1. Following SGLang's cache-aware router, implement `PrefixPolicy.route_call` in `policies/prefix_policy.py`:
+
+- **Eligible replicas:** Find the minimum `in_flight` count across all replicas (`view.replicas[r].in_flight`). A replica `r` is eligible if its `in_flight` count is at most `self.balance_threshold` above that minimum.
+- **Replica selection:** Among eligible replicas, choose the replica with the largest number of cached prompt blocks for `call` (`view.num_cached_blocks(call, r)`), breaking ties by lower `in_flight` count and then by lower replica ID `r`.
+- **Fallback (`balance_threshold == -1`):** When `balance_threshold == -1` (already handled by the supplied `if` check), route to the least-loaded replica just like the reference policy.
+
+With `leaf_first=False` and `balance_threshold=-1`, `PrefixPolicy` makes the exact same decisions as `ReferencePolicy`. Run the full Part 2 prefix test suite:
 
 ```bash
 pytest tests/test_part2_prefix.py
 ```
 
-With `leaf_first=False` and `balance_threshold=-1`, `PrefixPolicy` makes exactly the reference's decisions.
+
 
 ### 2.4 Experiments and questions
 
-The notebook sweeps the concurrency cap on one and two replicas, compares FIFO, LRU, and prefix-aware eviction, sweeps `balance_threshold`, and shows a customer-service trace (`dev-W4-0`) at thresholds 1 and 16. Use caps (2, 4, 8, 16) on `public_dev` for each replica count; compare eviction with `balance_threshold=-1`; sweep routing thresholds (-1, 0, 1, 2, 4, 16) with prefix-aware eviction enabled. Run your own variants as copies under `candidates/` rather than by editing the two graded files.
+In `notebooks/part2_lru_policy.ipynb`, run the experiments and answer **Q1–Q3** in `assignment4_report.pdf`:
+
+1. **Concurrency sweep (Section 4):** Sweep `cap` over `(2, 4, 8, 16)` on `public_dev` using `policies/reference.py` on both one replica (`replicas=1`) and two replicas (`replicas=2`).
+2. **Eviction comparison (Section 5):** Compare `policies/fifo.py` against `policies/reference.py` on one replica, and compare `policies/prefix_policy.py` with `leaf_first=False` vs. `leaf_first=True` (keeping `balance_threshold=-1`) on one and two replicas.
+3. **Routing sweep (Section 6):** With prefix-aware eviction enabled (`leaf_first=True`), sweep `balance_threshold` over `(-1, 0, 1, 2, 4, 16)` on two replicas, and inspect the two-replica timelines on the customer-service trace `dev-W4-0` at thresholds `1` and `16`.
+
+If you want to test custom policy variants, save them as copies under `candidates/` rather than modifying `policies/reference.py` or `policies/prefix_policy.py`.
 
 **Q1. Concurrency.**
 
-- From the two cap grids, which families prefer a low cap on one replica? Explain using their memory per call, prefix reuse, and job structure.
-- Why does the best cap change with two replicas?
-- Name one family whose best cap likely changes within a trace, and the trace feature that causes it.
+- Looking at the one-replica and two-replica cap grids, which workload families prefer a low concurrency cap on one replica? Explain why in terms of their memory per call, prefix reuse, and job DAG structure.
+- Why does the optimal cap shift when moving from one replica to two replicas?
+- Identify one workload family whose ideal concurrency cap likely changes *within* a single trace, and explain which trace feature causes this.
 
 **Q2. Eviction.**
 
-- In one table, give S and the per-family speedups, relative to LRU, of FIFO on one replica and of prefix-aware eviction on one and two replicas.
-- Which families gain most, and what about their prompts explains it? Why is the gain smaller on two replicas?
-- Describe a workload, real or hypothetical, in which evicting leaves first does worse than LRU.
+- Present a single table showing overall speedup `S` and per-family speedups (relative to LRU) for: (a) FIFO on one replica, (b) prefix-aware eviction on one replica, and (c) prefix-aware eviction on two replicas.
+- Which workload families gain the most from prefix-aware eviction, and what property of their prompts explains the improvement? Why is the relative gain smaller on two replicas than on one?
+- Describe a realistic or hypothetical workload in which evicting leaf blocks first performs *worse* than plain LRU.
 
 **Q3. Routing.**
 
-- Include the `balance_threshold` grid and name the best threshold.
-- Which families lose at threshold 16, and what in the two W4 timelines shows why?
-- How would you change `route_call` so that it never does worse than least-loaded routing on W4?
+- Include the `balance_threshold` speedup grid from Section 6 and state which threshold achieves the highest overall `S`.
+- Which workload families regress at `balance_threshold = 16`, and what in the two `dev-W4-0` timelines (`balance_threshold = 1` vs. `16`) explains why?
+- How would you modify `route_call` so that cache-aware routing never performs worse than least-loaded routing on `W4`?
+
+
 
 ## Part 3: Agent-driven policy research
 
 [Notebook](notebooks/part3_policy_research.ipynb)
 
-In this part, you will build a system in which LLM agents propose, implement, and evaluate serving policies. The system selects your final policy, and you measure what its agents added beyond the policies you wrote yourself.
+In this final part, you will build an automated research system in which LLM agents iteratively propose, implement, and evaluate serving policies for the two-replica simulator. Your system will select your final `policy.py` submission, and you will analyze what the agents discovered beyond your hand-written seed policies.
 
 ![One possible research system and the evaluation splits.](docs/figures/research_system.svg)
 
 ### What to build
 
-Policies run on two replicas, each with its own queue and KV cache, and are scored against the reference (`policies/reference.py`: LRU at cap 8, least-loaded routing). See [the policy API](#the-policy-api).
+All policies in Part 3 are evaluated on **two replicas** (each with its own queue and KV cache) and scored relative to `policies/reference.py` (LRU eviction at `cap = 8` with least-loaded routing; see [The policy API](#the-policy-api)).
 
-- Build your system in `research/`. `examples/research_system.py` is a minimal sequential loop: one prompt with the API and the current best policy, one code block back, keep the best. You can extend it or adapt a framework such as OpenEvolve, ShinkaEvolve, or CORAL; record the framework's commit and license in your campaign configuration.
-- Copy `examples/evaluator.py` to `research/evaluator.py` and choose the objective your system maximizes (`None` for an invalid candidate) and the feedback your agents see. The returned dict must keep `valid`, `violations`, `speedup`, and `by_family`, and add `objective`.
+1. **Build your research loop in `research/`:**  
+   `examples/research_system.py` provides a minimal greedy baseline: it prompts an LLM with the policy API and current best policy, extracts one candidate Python file, evaluates it, and keeps it if it improves the objective. You may extend this script or adapt an existing evolutionary/agentic code-search framework (such as OpenEvolve, ShinkaEvolve, or CORAL—if you use one, record its git commit and license in `campaign.json`).
+2. **Define your evaluator in `research/evaluator.py`:**  
+   Copy `examples/evaluator.py` to `research/evaluator.py` and customize:
+   - the scalar `objective` your search maximizes (must be `None` for invalid candidates, and a finite number for valid ones); and
+   - the diagnostic feedback returned to your agents.  
+   The dictionary returned by `evaluate()` must preserve `valid`, `violations`, `speedup`, and `by_family`, in addition to `objective`.
 
-The example starts from your completed `policies/reference.py` (2.1). For an earlier plumbing check, add `--start policies/fifo.py`.
-
-Check the plumbing offline before spending tokens:
+By default, `examples/research_system.py` starts from your completed `policies/reference.py` from Section 2.1 (to test the pipeline before finishing 2.1, pass `--start policies/fifo.py`). Verify your setup offline before spending LLM tokens:
 
 ```bash
 mkdir -p research
@@ -300,13 +412,12 @@ python examples/research_system.py --evaluator research/evaluator.py --iters 3 -
 
 ### Campaigns
 
-A campaign is one unattended run of your system, with its own directory `runs/<campaign>/` that holds its candidates and logs. The example loop writes `campaign.json`, `log.jsonl` (one line per candidate), `calls.jsonl` (token usage per LLM call), and `selection.json` there.
+A **campaign** is a single unattended run of your research system stored in its own directory `runs/<campaign>/`.
 
-A campaign can start from any policies (the reference, your Part 2 policy, or policies you write), and its prompts can include your own ideas. Keep every seed in `candidates/`, and before a campaign starts, record its seeds, model, prompts, and token budget in `campaign.json`.
-
-Your submitted `policy.py` must be the candidate a campaign chose in its `selection.json`, with no intervention between the campaign's start and that selection. A seed may win, and between campaigns you can change anything.
-
-Log every candidate, including failures, in `log.jsonl` with `id`, `parent`, `hypothesis`, `file` (the candidate's path), `objective`, `dev_S`, `by_family`, `tokens`, and `valid`, and record finalists' `val_S` in `log.jsonl` or `selection.json`. Log every human action that stops, restarts, or changes a campaign as one line of `interventions.jsonl`, for example:
+- **Seeds and configuration (`campaign.json`):** A campaign may start from any seed policy or pool of seeds (e.g., `policies/reference.py`, `policies/prefix_policy.py`, or custom policies you write yourself), and your prompts may encode domain ideas. Store all hand-written seed policies in `candidates/`. Before a campaign starts, record its seeds, model ID, prompts, and token budget in `runs/<campaign>/campaign.json`.
+- **Candidate and call logs (`log.jsonl`, `calls.jsonl`):** Log every evaluated candidate—including invalid or failed ones—as one JSON line in `log.jsonl` containing `id`, `parent`, `hypothesis`, `file` (path to the saved candidate code), `objective`, `dev_S`, `by_family`, `tokens`, and `valid`. Record `calls.jsonl` with token usage per LLM call, and record `val_S` for any finalists in `log.jsonl` or `selection.json`.
+- **Final selection (`selection.json`):** Your submitted `policy.py` must be the exact candidate chosen in `selection.json` by one of your campaigns, with **no human intervention** between the start of that campaign and its final selection (a seed policy is allowed to win if no generated candidate beats it). Between separate campaigns, you are free to modify your system, prompts, evaluator, or seeds.
+- **Intervention log (`interventions.jsonl`):** Whenever a human stops, restarts, or modifies a campaign, record one JSON line in `interventions.jsonl`:
 
 ```json
 {
@@ -317,13 +428,19 @@ Log every candidate, including failures, in `log.jsonl` with `id`, `parent`, `hy
 }
 ```
 
+
+
 ### Policy rules
 
-- Your research system may use workload family labels; the policy cannot see them.
-- A policy is one file that defines exactly one `Policy` subclass (or sets `POLICY = ...`). It sees only past events and the current `view`.
-- It can import the standard library and numpy, except modules that do I/O, networking, processes, or time (listed in `agentkv/sandbox/guard.py`), and nothing from this repository except `agentkv.policy`. File, network, process, thread, and clock access are blocked. Use `state.rng` for randomness.
-- Each hook call has 50 ms of CPU time, and `state` plus the policy's attributes must pickle to at most 4 MiB.
-- A bad return value, an exception, a timeout, or a stall fails that trace, and one failed trace makes the whole split invalid. A policy valid on `public_dev` can still fail elsewhere, so check finalists on `public_val`.
+Every candidate policy is checked in a sandboxed worker process and must obey these constraints:
+
+- **No workload labels in policies:** Your *research system* and evaluator may inspect workload family names (`W1`–`W5`, `M1`–`M2`, `D`), but the *policy itself* cannot access trace or family labels.
+- **Single-file structure:** A policy must be a single `.py` file that defines one `Policy` subclass (or assigns `POLICY = ...`). It may only use information from past `on_event` calls and the current `view`.
+- **Allowed imports and sandbox restrictions:** Policies may import the Python standard library and `numpy`, except for modules that access I/O, networking, processes, or wall-clock time (see `agentkv/sandbox/guard.py`). From this repository, only `agentkv.policy` may be imported. File, network, subprocess, thread, and clock access are blocked; use `state.rng` for any randomness.
+- **Resource budgets:** Each hook call is limited to **50 ms of CPU time**, and `(policy.__dict__, state)` together must pickle to at most **4 MiB**.
+- **All-or-nothing split validity:** Returning an invalid value, raising an exception, exceeding the 50 ms / 4 MiB limits, or stalling fails that trace, and **any single failed trace invalidates the entire split**. Because a policy that passes `public_dev` can still hit edge cases or timeouts on other traces, always validate finalists on `public_val`.
+
+
 
 ### Scoring
 
@@ -336,13 +453,17 @@ if __name__ == "__main__":
     print(r.summary(details=True))  # per-trace cache, preemption, and CPU statistics
 ```
 
-| Split        | Traces                              | Use                                |
-| ------------ | ----------------------------------- | ---------------------------------- |
-| `screen`     | 8, one per family from `public_dev` | Discarding weak candidates cheaply |
-| `public_dev` | 32, four per family                 | Development                        |
-| `public_val` | 16, two per family                  | Comparing finalists                |
-| Leaderboard  | 16, hidden                          | Gradescope feedback                |
-| Hidden test  | 24, hidden                          | Your grade                         |
+
+| Split        | Traces                             | Purpose                            |
+| ------------ | ---------------------------------- | ---------------------------------- |
+| `screen`     | 8 (1 per family from `public_dev`) | Fast filtering of weak candidates  |
+| `public_dev` | 32 (4 per family)                  | Main development and optimization  |
+| `public_val` | 16 (2 per family)                  | Out-of-sample finalist selection   |
+| Leaderboard  | 16 (hidden)                        | Gradescope check and comparison    |
+| Hidden test  | 24 (hidden)                        | Final Part 3.1 performance grading |
+
+
+Given mean job latency `L` on each trace, the overall speedup `S` and assignment credit are computed as:
 
 ```text
 S_f     = geometric mean over family f's traces of L(reference) / L(policy),  L = mean job latency
@@ -352,52 +473,60 @@ g_eff   = g - sum over families of max(0, 0.90 - S_f)
 credit  = clip(10 + 20 × g_eff / 0.09, 0, 30)   percent of the assignment grade
 ```
 
+
 | S (no family below 0.90) | 0.98 | 1.00 | 1.02 | 1.04 | 1.06 | 1.08 | 1.099 |
 | ------------------------ | ---- | ---- | ---- | ---- | ---- | ---- | ----- |
 | Credit (%)               | 5.5  | 10.0 | 14.4 | 18.5 | 22.6 | 26.5 | 30.0  |
 
-With two to four traces per family, the same policy's S differs by a few percent between splits.
+
+Note that because each split has two to four traces per family, the same policy's `S` typically varies by a few percent across splits.
 
 ### Research report
 
-Answer Q1–Q6 in `assignment4_report.pdf`, each below its question. Cite campaign directories and candidate ids so that every number can be found in your logs.
+Answer **Q1–Q6** in `assignment4_report.pdf`, placing each answer directly under its question heading. Cite specific campaign directories (`runs/<campaign>/`) and candidate IDs so every reported number can be traced back to your logs.
 
 **Q1. Your research system.**
 
-- Draw its LLM calls, deterministic steps, tools, stored state, and the points where a person can intervene.
-- State the objective, the feedback agents see, how invalid candidates are handled, how the final policy is selected, and when a campaign stops.
-- Name one design alternative you tried or rejected, and what the evidence showed.
-- Explain how you choose parents or lineages and which split screens candidates before `public_dev`.
+- Include a diagram of your research system showing its LLM calls, deterministic steps, tools, stored state, and any points where a human can intervene.
+- Specify your optimization objective, the feedback shown to agents, how invalid candidates are handled or repaired, how finalists and the final policy are chosen, and your stopping criteria.
+- Describe one design alternative you tested or rejected, and summarize the evidence behind that decision.
+- Explain how your system selects parent candidates or manages lineages, and which split (e.g., `screen`) filters candidates before full `public_dev` evaluation.
 
-**Q2. What the agents contribute.** Using one model and one token budget (state both):
+**Q2. What the agents contribute.** Fixing a single LLM model and per-campaign token budget (state both), compare four conditions:
 
-- Score (a) your best seed alone, and run (b) a campaign started from `policies/reference.py` and (c) a campaign started from your best seed.
-- Run (d), campaign (c) with one component of your system removed, for example the per-trace diagnostics, screening, or finalist selection.
-- Give `public_dev` and `public_val` S for (a)–(d) in one table, and say what explains the differences.
+- **(a) Best seed alone:** Score your strongest hand-written seed policy without running any agent loop.
+- **(b) Campaign from reference:** Run a campaign initialized only from `policies/reference.py`.
+- **(c) Campaign from best seed:** Run a campaign initialized from your best seed policy.
+- **(d) Ablated campaign:** Re-run campaign (c) with one key component of your research system removed (for example, per-trace diagnostics, `screen` filtering, or `public_val` finalist selection).
+- Report `public_dev` and `public_val` `S` for (a)–(d) in a single comparison table, and explain what accounts for the differences.
 
 **Q3. Autonomy.**
 
-- For your longest unattended campaign, give its wall time, candidates scored, and tokens, and summarize your intervention log.
-- Quote the log entries (hypothesis, result, next hypothesis) for one case where an agent diagnosed a failure and chose a useful next step, and for one where it did not.
+- For your longest unattended campaign, report its wall-clock duration, total candidates scored, and total tokens spent, and summarize your `interventions.jsonl` log across campaigns.
+- Quote log entries (`hypothesis` -> evaluation result -> next `hypothesis`) for: (1) one example where an agent accurately diagnosed a failure or bottleneck and proposed an effective follow-up, and (2) one example where it failed to do so.
 
 **Q4. Cost.**
 
-- For each campaign in Q2, plot the best `public_dev` S against tokens spent and against candidates scored, mark the finalists' `public_val` S, and give the fraction of valid candidates.
-- At what token count would you have stopped, and how much `public_dev` and `public_val` S would you have lost?
+- For each campaign in Q2, plot the best `public_dev` `S` found so far against (1) total tokens spent and (2) number of candidates scored; mark the finalists' `public_val` `S` on the plots, and report the fraction of generated candidates that were valid.
+- Looking at the cost curves, at what token budget would you have stopped early, and how much `public_dev` and `public_val` `S` would that early stop have cost?
 
 **Q5. The selected policy.**
 
-- Explain it in your own words, with pseudocode and a trace example from `viz.record(..., replicas=2)`. If a seed won, use the best agent-generated finalist instead.
-- Disable one mechanism the agents introduced and give the change on both public splits.
-- Quote the agent's hypothesis for that mechanism and say whether your measurement supports it.
+- Explain how your selected policy works in your own words, accompanied by concise pseudocode and an annotated two-replica timeline from `viz.record(..., replicas=2)`. (If a hand-written seed won your campaign, analyze the best agent-generated finalist instead.)
+- Ablate (disable) one specific mechanism that the agents introduced and report the resulting change in `S` and per-family speedups on both `public_dev` and `public_val`.
+- Quote the agent's logged hypothesis for that mechanism and evaluate whether your ablation measurements support the agent's reasoning.
 
 **Q6. Limitations.**
 
-- Give per-family results on both public splits, and use a `viz.record` timeline to explain its weakest family.
-- Predict its hidden-test S with a range, based on the spread across `public_dev`, `public_val`, and the leaderboard.
-- Name one thing the agents found that you would not have, and one problem you had to fix by hand.
+- Report the selected policy's per-family speedups on both `public_dev` and `public_val`, and use a `viz.record` timeline to explain why it struggles on its weakest workload family.
+- Predict a range for its hidden-test `S`, justifying your interval using the observed variance across `public_dev`, `public_val`, and the Gradescope leaderboard.
+- Highlight one effective idea the agents discovered that you would not have thought to try by hand, and one failure mode or bug you had to fix manually in your research system or seeds.
+
+
 
 ## Submission
+
+
 
 ### Gradescope: Part 3 leaderboard
 
@@ -418,7 +547,15 @@ policy.py, params.json (if used)       the files you submitted to Gradescope
 assignment4_report.pdf
 ```
 
-The `policy.py` in this archive is the one scored on the hidden test set. The report contains your team name, both members' names and EIDs, the `pytest` summary, your answers to Part 1 Q1–Q4, Part 2 Q1–Q3, and Part 3 Q1–Q6 in order, each below its question, the Bedrock model ids and total tokens you used, and the AI Use Disclosure required by the [course policies](https://utcs378.github.io/fall26/logistics).
+The `policy.py` in this archive is the one scored on the hidden test set. Include the following in `assignment4_report.pdf`:
+
+- Your team name and both members' names and UT EIDs;
+- The output summary from `pytest`;
+- Your answers to Part 1 (Q1–Q4), Part 2 (Q1–Q3), and Part 3 (Q1–Q6) in order, each placed directly below its question heading;
+- The Bedrock model IDs and total token counts used across the assignment; and
+- The AI Use Disclosure required by the [course policies](https://utcs378.github.io/fall26/logistics).
+
+
 
 ## Grading
 
