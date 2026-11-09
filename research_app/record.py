@@ -1,14 +1,13 @@
-"""Record the agent workflow without waiting for simulated delays (Part 1).
+"""Record research runs without waiting for simulated delays.
 
-Staff build the D-family traces this way from the reference agent; the Part 1
-tests use it to check your agent's trace export: `record_reports` and then
-`to_trace_job` for each recording. Record mode never sleeps: the FakeLLM
-answers instantly and tool latencies are sampled and recorded, keyed by
-(seed, op id, attempt), so the same inputs always give the same recordings
-regardless of scheduling.
+Used by trace generation and trace-export tests. FakeLLM responds immediately;
+tool delays are sampled from (seed, operation id, attempt) and recorded rather
+than slept. Repeated inputs produce the same recordings regardless of task
+scheduling.
 
     from research_app.record import record_reports
     from research_app.tracing import to_trace_job
+
     recs = record_reports(questions, snapshot="v2", seed=7)
     for rec, arrival in zip(recs, arrivals):
         to_trace_job(rec, builder.job(arrival, meta={"question": rec.question_id}))

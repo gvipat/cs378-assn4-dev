@@ -98,8 +98,9 @@ def record(
 ) -> Record:
     """Replay `trace` (a path or a Trace) under `policy` (a path or a Policy class).
 
-    kv_tokens replaces the trace's KV-cache capacity per replica (rounded down to
-    16-token blocks). Raises ValueError with the violation if the policy breaks a rule.
+    Uses one replica by default; pass replicas=2 to match Part 3 scoring.
+    kv_tokens overrides each replica's KV capacity, rounded down to 16-token
+    blocks. Raises ValueError if the policy fails or returns an invalid decision.
     """
     if isinstance(trace, (str, Path)):
         trace = load(trace)

@@ -1,5 +1,4 @@
-"""A sequence in the engine. Field names match nano-vLLM's `Sequence` so the
-GPU adapter can hand these objects straight to its ModelRunner."""
+"""Track a call's tokens and progress in the legacy single-replica simulator."""
 
 from __future__ import annotations
 
@@ -34,7 +33,7 @@ class Seq:
         self.max_tokens = max_tokens
         # Chained hashes of every full block of prompt + frozen output.
         self.hashes = hashes
-        # Prompt + frozen output token ids (GPU replay and verified lookups only).
+        # Prompt and frozen output token ids, used to verify cache hits.
         self.tokens = tokens
         self.num_cached_tokens = 0
         self.num_scheduled_tokens = 0
@@ -88,6 +87,5 @@ class Seq:
         return tuple(self.tokens[i * bs : min((i + 1) * bs, self.num_tokens)])
 
     def append_token(self) -> None:
-        """Advance by one generated token. Outputs are frozen, so the token id is
-        already in `tokens`; the GPU adapter forces the sampler to produce it."""
+        """Advance by one token from the trace's frozen output."""
         self.num_tokens += 1

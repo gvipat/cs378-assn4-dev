@@ -1,16 +1,12 @@
-"""Replay one trace against one policy: the application layer.
+"""Replay application DAGs and expose causal state to serving policies.
 
-The driver owns the jobs and their DAGs, starts tool timers, and keeps the
-ready queue. Whenever a ready call could be dispatched it asks the policy for
-the concurrency cap and, if the policy defines `dispatch_order`, which ready
-calls to send in what order (otherwise the oldest first). The engine (CPU
-simulator or GPU) owns KV memory and the step loop; it asks the policy for a
-victim when it must overwrite a cached block, and, through `_PolicyHooks`, for
-the admission order, prefill-vs-decode, and preemption choices the policy
-overrides.
+The driver tracks arrivals, call dependencies, tool delays, and dispatch.
+Engines handle batching and KV memory. Policy hooks control concurrency,
+dispatch order, eviction, admission, and preemption.
 
-Everything the policy learns flows through `client.event(...)` as rekeyed,
-causal events: there is no other channel.
+This module includes the legacy single-replica simulator. The assignment's
+score() and viz.record() APIs use vidur_replay.VidurReplay, which reuses the
+application driver and runs Vidur's scheduler on one or two replicas.
 """
 
 from __future__ import annotations

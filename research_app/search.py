@@ -1,8 +1,8 @@
-"""Local and web search backends for the same research graph.
+"""Retrieve local or web sources for the research workflow.
 
-A backend supplies search results, document text, and a store of the exact
-source versions used for citation checks. The adapters retrieve source text;
-the student's graph still plans the research and writes the report.
+Backends return search results and document text, and retain the exact source
+versions used by the citation checker. The graph handles planning, evidence
+extraction, and report generation.
 """
 
 from __future__ import annotations

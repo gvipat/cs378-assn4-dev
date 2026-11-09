@@ -1,11 +1,14 @@
 """A small KV-cache harness for testing a policy's eviction decisions.
 
 The harness drives a block-level cache with one-token blocks named by strings
-and feeds the policy the same events the engine would; a block's name is both
-its residence id and its prefix id, and everything is on replica 0. It is what
-the Part 2 public oracles use:
+and emits allocation, hit, release, and eviction events on replica 0. A block's
+name is both its residence id and its prefix hash. After completing the LRU
+policy:
 
-    h = CacheHarness(LRUPolicy(), capacity=3)
+    from agentkv.harness import CacheHarness
+    from policies.reference import ReferencePolicy
+
+    h = CacheHarness(ReferencePolicy(), capacity=3)
     h.allocate("A"); h.allocate("B"); h.release("A"); h.release("B")
     assert h.cached() == ["A", "B"] and h.empty_slots() == 1
 """
