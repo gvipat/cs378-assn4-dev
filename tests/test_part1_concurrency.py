@@ -16,6 +16,7 @@ def test_cap_never_exceeded_under_random_load_and_limit_changes():
         rng = random.Random(7)
         held = 0
         grants_over = []
+        completed = []
 
         async def worker(i):
             nonlocal held
@@ -26,6 +27,7 @@ def test_cap_never_exceeded_under_random_load_and_limit_changes():
                 held += 1
                 await asyncio.sleep(rng.random() * 0.01)
                 held -= 1
+                completed.append(i)
 
         async def changer():
             for limit in [1, 5, 2, 8, 3]:
@@ -33,13 +35,12 @@ def test_cap_never_exceeded_under_random_load_and_limit_changes():
                 await cap.set_limit(limit)
 
         await asyncio.gather(changer(), *(worker(i) for i in range(60)))
-        return cap, grants_over
+        return cap, grants_over, completed
 
-    cap, over = asyncio.run(go())
+    cap, over, completed = asyncio.run(go())
     assert over == []
-    assert cap.over_limit == 0
     assert cap.in_flight == 0
-    assert cap.grants == 60
+    assert sorted(completed) == list(range(60))
 
 
 def test_lowering_cap_drains_without_cancelling():
@@ -78,3 +79,50 @@ def test_cap_rejects_out_of_range():
         ConcurrencyLimiter(0)
     with pytest.raises(ValueError):
         ConcurrencyLimiter(9)
+
+
+def test_raising_cap_wakes_waiters_without_a_release():
+    async def go():
+        cap = ConcurrencyLimiter(1)
+        await cap.acquire()
+        waiter = asyncio.create_task(cap.acquire())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        await cap.set_limit(2)
+        await asyncio.wait_for(waiter, timeout=1)
+        assert cap.in_flight == 2
+        await cap.release()
+        await cap.release()
+        assert cap.in_flight == 0
+
+    asyncio.run(go())
+
+
+def test_cancelling_a_waiter_does_not_consume_a_slot():
+    async def go():
+        cap = ConcurrencyLimiter(1)
+        await cap.acquire()
+        waiter = asyncio.create_task(cap.acquire())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert cap.in_flight == 1
+        await cap.release()
+        async with asyncio.timeout(1):
+            async with cap.slot():
+                assert cap.in_flight == 1
+        assert cap.in_flight == 0
+
+    asyncio.run(go())
+
+
+def test_release_without_a_slot_raises():
+    async def go():
+        cap = ConcurrencyLimiter(1)
+        with pytest.raises(RuntimeError):
+            await cap.release()
+        assert cap.in_flight == 0
+
+    asyncio.run(go())

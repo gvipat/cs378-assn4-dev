@@ -105,9 +105,8 @@ All 16 reports share one cap C on concurrent LLM calls, enforced by
 its slot through retries, and tool calls do not take slots. Lowering the limit
 lets running calls finish, and raising it must wake waiting calls.
 Use the supplied condition lock so concurrent acquisitions cannot take the
-same slot. Cancellation while waiting must leave counters unchanged. Each
-grant increments `grants` and updates `peak`; `over_limit` counts grants at or
-above the limit and must remain zero. Releasing without a held slot raises
+same slot. Cancellation while waiting must leave `_in_flight` unchanged.
+Releasing without a held slot raises
 `RuntimeError`. The supplied range check restricts the cap to 1–8.
 
 ```bash

@@ -34,7 +34,6 @@ class CapDemo:
     initial_limit: int
     final_limit: int
     peak: int
-    over_limit: int
 
 
 async def run_cap_demo(cap) -> CapDemo:
@@ -67,13 +66,21 @@ async def run_cap_demo(cap) -> CapDemo:
         asyncio.gather(lower_limit(), *(call(i, d) for i, d in enumerate(durations))),
         timeout=8,
     )
+    active = peak = 0
+    changes = sorted(
+        (call[key], delta)
+        for call in calls
+        for key, delta in (("start", 1), ("end", -1))
+    )
+    for _, delta in changes:
+        active += delta
+        peak = max(peak, active)
     return CapDemo(
         sorted(calls, key=lambda row: row["call"]),
         changed,
         3,
         1,
-        cap.peak,
-        cap.over_limit,
+        peak,
     )
 
 

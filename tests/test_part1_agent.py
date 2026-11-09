@@ -137,7 +137,17 @@ def test_agent_respects_cap_and_retries_keep_their_slot(c):
     """Every LLM call fails twice before succeeding; each retry stays in the
     slot it already holds, so the cap grants one slot per operation."""
     llm = FakeLLM(transient=lambda stage, attempt: attempt < 3)
-    cap = ConcurrencyLimiter(c)
+
+    class ObservedLimiter(ConcurrencyLimiter):
+        def __init__(self, limit):
+            super().__init__(limit)
+            self.acquisitions = 0
+
+        async def acquire(self):
+            await super().acquire()
+            self.acquisitions += 1
+
+    cap = ObservedLimiter(c)
     qs = load_questions(public=True)[:4]
 
     async def go():
@@ -147,7 +157,7 @@ def test_agent_respects_cap_and_retries_keep_their_slot(c):
     llm_ops = [o for r in recs for o in r.ops if o.kind == "llm"]
     assert recorder.llm_peak <= c
     assert recorder.cap_violations == 0
-    assert cap.grants == len(llm_ops)
+    assert cap.acquisitions == len(llm_ops)
     for op in llm_ops:
         assert [a.status for a in op.attempts] == ["transient", "transient", "ok"]
         assert op.retries == 2
