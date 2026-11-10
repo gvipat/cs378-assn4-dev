@@ -28,6 +28,7 @@ class ObservedPolicy(Policy):
             self.admitted.add(event.call)
         elif event.kind == "alloc":
             assert event.block not in self.known
+            assert event.block != event.block_hash
             self.known[event.block] = event.replica
             self.prefixes[event.block_hash] = event.replica
         elif event.kind == "hit":

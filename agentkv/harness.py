@@ -1,9 +1,9 @@
 """A small KV-cache harness for testing a policy's eviction decisions.
 
 The harness drives a block-level cache with one-token blocks named by strings
-and emits allocation, hit, release, and eviction events on replica 0. A block's
-name is both its residence id and its prefix hash. After completing the LRU
-policy:
+and emits allocation, hit, release, and eviction events on replica 0. Names
+label prefixes for display; events use separate residence ids and prefix hashes,
+just as the evaluator does. After completing the LRU policy:
 
     from agentkv.harness import CacheHarness
     from policies.reference import ReferencePolicy
@@ -41,6 +41,8 @@ class CacheHarness:
         self.names: dict[int, str] = {}
         self.seqs: dict[str, list[Seq]] = {}
         self.parents: dict[str, str | None] = {}
+        self._residences: dict[int, str] = {}
+        self._hashes: dict[str, int] = {}
         self.evicted: list[str] = []
         self.t = 0.0
         self._events: list = []
@@ -117,18 +119,36 @@ class CacheHarness:
 
     def _emit(self, kind: str, h: int, seq, **kw) -> None:
         name = self.names.get(h)
+        if kind == "alloc":
+            block = self.kv.blocks[self.kv.prefix_map[h]]
+            pid = f"r{block.id}:{block.gen}"
+            self._residences[h] = pid
+            self._hashes[pid] = h
+        else:
+            pid = self._residences[h]
         if kind == "hit":
-            self._events.append(("hit", self.t, name, CALL))
+            self._events.append(("hit", self.t, pid, CALL))
         elif kind == "alloc":
             parent = self.parents.get(name)
             self._events.append(
-                ("alloc", self.t, name, parent, self._depth(name), CALL, name, 0)
+                (
+                    "alloc",
+                    self.t,
+                    pid,
+                    f"p{_h(parent):032x}" if parent is not None else None,
+                    self._depth(name),
+                    CALL,
+                    f"p{h:032x}",
+                    0,
+                )
             )
         elif kind == "release":
-            self._events.append(("release", self.t, name, CALL, kw["refs"]))
+            self._events.append(("release", self.t, pid, CALL, kw["refs"]))
         elif kind == "evict":
             self.evicted.append(name)
-            self._events.append(("evict", self.t, name))
+            self._events.append(("evict", self.t, pid))
+            del self._residences[h]
+            del self._hashes[pid]
 
     def _flush(self) -> None:
         ev, self._events = self._events, []
@@ -138,7 +158,8 @@ class CacheHarness:
         self._flush()
         hdr = [self.t, len(self.kv.empty), self.kv.num_active, 0, 0]
         pid = self.rt.choose_victim(hdr)
-        bid = self.kv.prefix_map.get(_h(pid)) if isinstance(pid, str) else None
+        h = self._hashes.get(pid) if isinstance(pid, str) else None
+        bid = self.kv.prefix_map.get(h) if h is not None else None
         if bid is None or bid not in cached:
             raise PolicyError(
                 "invalid", f"choose_victim returned {pid!r}, which is not a candidate"

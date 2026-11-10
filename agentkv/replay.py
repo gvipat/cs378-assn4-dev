@@ -194,6 +194,8 @@ class Replay:
         self.rekey = Rekey(
             hashlib.blake2b(f"{trace.sha256}:{seed}".encode(), digest_size=16).digest()
         )
+        self._residences: dict[int, str] = {}
+        self._residence_hashes: dict[str, int] = {}
         self.check_every = check_every
         self.verify = verify
         hooks = _PolicyHooks(self)
@@ -403,7 +405,7 @@ class Replay:
                 break
             call = self.ready.pop(key)
             call.dispatched_at = self.t
-            self.client.event(("dispatch", self.t, call.pid))
+            self.client.event(("dispatch", self.t, call.pid, 0))
             node = call.node
             tokens = self.trace.tokens(node) if self.needs_tokens else None
             seq = Seq(
@@ -439,16 +441,34 @@ class Replay:
 
     def _emit_block(self, kind: str, h: int, seq: Seq | None, **kw) -> None:
         rk = self.rekey.block
+        if kind == "alloc":
+            block = self.kv.blocks[self.kv.prefix_map[h]]
+            pid = self.rekey._h("r", f"0:{block.id}:{block.gen}".encode())
+            self._residences[h] = pid
+            self._residence_hashes[pid] = h
+        else:
+            pid = self._residences[h]
         if kind == "hit":
-            self.client.event(("hit", self.t, rk(h), seq.owner.pid))
+            self.client.event(("hit", self.t, pid, seq.owner.pid))
         elif kind == "alloc":
             self.client.event(
-                ("alloc", self.t, rk(h), rk(kw["parent"]), kw["depth"], seq.owner.pid)
+                (
+                    "alloc",
+                    self.t,
+                    pid,
+                    rk(kw["parent"]),
+                    kw["depth"],
+                    seq.owner.pid,
+                    rk(h),
+                    0,
+                )
             )
         elif kind == "release":
-            self.client.event(("release", self.t, rk(h), seq.owner.pid, kw["refs"]))
+            self.client.event(("release", self.t, pid, seq.owner.pid, kw["refs"]))
         elif kind == "evict":
-            self.client.event(("evict", self.t, rk(h)))
+            self.client.event(("evict", self.t, pid))
+            del self._residences[h]
+            del self._residence_hashes[pid]
 
     def _on_call(self, kind: str, seq: Seq) -> None:
         call: _Call = seq.owner
@@ -463,7 +483,7 @@ class Replay:
     def _victim(self, cached: dict) -> int:
         self.cv_calls += 1
         pid = self.client.choose_victim(self._hdr())
-        h = self.rekey.unblock(pid)
+        h = self._residence_hashes.get(pid) if isinstance(pid, str) else None
         bid = self.kv.prefix_map.get(h) if h is not None else None
         if bid is None or bid not in cached:
             raise PolicyError(

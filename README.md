@@ -326,6 +326,7 @@ Complete `__init__`, `on_event`, and `choose_victim` in `policies/prefix_policy.
 
 - **Eviction rule (**`choose_victim`**):** When `self.leaf_first` is `True` (the default), return the least recently used block in `candidates` that is currently a **leaf** of its replica's prefix tree; if no candidate is a leaf, fall back to the least recently used candidate overall. When `self.leaf_first` is `False`, behave identically to plain LRU.
 - **Definition of a leaf:** A candidate block is a leaf if no currently resident block on the same replica has a `parent_hash` equal to the candidate's `block_hash`. Once all of a block's resident children on that replica have been evicted, the block itself becomes a leaf.
+- **Block IDs and hashes:** `event.block` identifies one resident copy. A child's `parent_hash` refers to its parent's `block_hash`, not its residence ID. Copies of the same prefix on different replicas share a hash but have different residence IDs.
 - **Maintaining prefix trees from events (**`on_event`**):** Build and update the prefix tree structure using `on_event` rather than reading `view.blocks` (the unit tests invoke `choose_victim` with `view=None`):
   - On `alloc`, record the block's `block_hash`, `parent_hash` (`None` for the first block of a prompt), and `replica`, in addition to updating its recency.
   - On `hit`, update the block's recency.
@@ -384,6 +385,10 @@ If you want to test custom policy variants, save them as copies under `candidate
 - Propose a change to `route_call` that reduces the observed W4 regression using only the current view and past events. What load-versus-affinity tradeoff does it make? Could it guarantee no regression on unseen W4-like workloads without falling back to least-loaded routing? Explain; no implementation is required.
 
 
+
+### Optional: job-first dispatch
+
+Section 7 of the Part 2 notebook explores `dispatch_order`. This section is ungraded and requires no submission.
 
 ## Part 3: Agent-driven policy research
 

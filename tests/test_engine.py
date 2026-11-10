@@ -6,7 +6,7 @@ import pytest
 
 from conftest import FIFO, build_chat_trace
 
-from agentkv.policy import Policy
+from agentkv.policy import EVENT_FIELDS, Policy
 from agentkv.replay import Replay
 from agentkv.sandbox.client import InProcessClient
 from agentkv.trace import load
@@ -80,13 +80,51 @@ def _normalize(log):
     names = {}
 
     def norm(v):
-        if isinstance(v, str) and v[:1] in "bjcs" and len(v) == 17:
+        if isinstance(v, str) and v[:1] in "bjcsr" and len(v) == 17:
             return names.setdefault(v, f"{v[0]}{len(names)}")
         if isinstance(v, list):
             return [norm(x) for x in v]
         return v
 
     return [(k, t, {f: norm(v) for f, v in d.items()}) for k, t, d in log]
+
+
+def test_events_preserve_prefix_identity_and_residence_lifetimes(pressure_trace):
+    result, client = replay(pressure_trace, policy=Recorder, check=1)
+    assert result.valid, result.violation
+    resident, seen_ids, seen_hashes, prompts = {}, set(), set(), {}
+    recomputed = False
+    for kind, _, fields in client.rt.policy.log:
+        if kind == "tc":
+            continue
+        assert set(fields) == set(EVENT_FIELDS[kind]), (kind, fields)
+        if kind == "ready":
+            prompts[fields["call"]] = fields["block_hashes"]
+        elif kind == "dispatch":
+            assert fields["replica"] == 0
+        elif kind == "alloc":
+            block, prefix = fields["block"], fields["block_hash"]
+            assert block != prefix and block not in seen_ids
+            assert fields["replica"] == 0
+            parent, depth = fields["parent_hash"], fields["depth"]
+            assert (parent is None) == (depth == 0)
+            if parent is not None:
+                assert parent in seen_hashes
+            prompt = prompts[fields["call"]]
+            if depth < len(prompt):
+                assert prefix == prompt[depth]
+                assert parent == (prompt[depth - 1] if depth else None)
+            recomputed |= prefix in seen_hashes
+            resident[block] = prefix
+            seen_ids.add(block)
+            seen_hashes.add(prefix)
+        elif kind in ("hit", "release"):
+            assert fields["block"] in resident
+        elif kind == "evict":
+            del resident[fields["block"]]
+    assert result.diag["evictions"] > 0 and recomputed
+    assert seen_ids.isdisjoint(seen_hashes)
+    assert {b.id: b.block_hash for b in client.rt.blocks.values()} == resident
 
 
 def test_no_future_information(tmp_path):
