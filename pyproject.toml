@@ -9,10 +9,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Part 1: the deep research agent (LangGraph, Bedrock, web search clients).
+# Part 1: the deep research agent (LangGraph; httpx for the course LLM proxy and web search).
 agent = [
     "langgraph>=1.0,<1.3",
-    "boto3>=1.35",
     "httpx>=0.27",
 ]
 # The notebooks students work in (plots and Jupyter).

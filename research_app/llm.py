@@ -3,8 +3,9 @@
     FakeLLM     deterministic and rule-based; recognises the plan / extract /
                 synthesize / repair steps and returns valid structured output.
                 Used by the tests, offline runs, and staff trace generation.
-    BedrockLLM  Amazon Bedrock through the Converse API. Model and region come
-                from AGENTKV_BEDROCK_MODEL and AWS_REGION.
+    BedrockLLM  Amazon Bedrock models through the course LLM proxy's
+                OpenAI-compatible API. The model comes from AGENTKV_BEDROCK_MODEL,
+                and your key from KEY_FILE (README, Model access).
 
 Both implement `await llm.complete(messages, max_tokens=..., stage=...)`.
 Transient failures (throttling, timeouts) raise TransientLLMError; the tracing
@@ -275,20 +276,79 @@ def _heuristic_subtopics(question: str) -> list[dict]:
 
 # ---------------------------------------------------------------- bedrock
 
-THROTTLE_CODES = {
-    "ThrottlingException",
-    "ServiceUnavailableException",
-    "ModelNotReadyException",
-    "TooManyRequestsException",
-    "InternalServerException",
-    "ModelTimeoutException",
-}
+LLM_URL = "https://llm.utcs378-infra.duckdns.org"
+KEY_FILE = Path.home() / ".agentkv_llm_key"
+
+# Rate limits and the proxy or Bedrock being briefly unavailable. Anything else
+# (an unknown model, a bad key, a spent budget) fails the same way every time.
+TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+
+def proxy_client(timeout: float = 120.0):
+    """An httpx client for the course LLM proxy, with your key from KEY_FILE."""
+    import httpx
+
+    key = os.environ.get("AGENTKV_LLM_KEY", "")
+    if not key and KEY_FILE.exists():
+        key = KEY_FILE.read_text().strip()
+    if not key:
+        raise ValueError(
+            f"no LLM key: put yours in {KEY_FILE} (see Model access in README.md)"
+        )
+    return httpx.Client(
+        base_url=os.environ.get("AGENTKV_LLM_URL", LLM_URL),
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=httpx.Timeout(timeout, connect=10.0),
+    )
+
+
+def chat(
+    client,
+    model: str,
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float | None = None,
+) -> tuple[str, int, int]:
+    """One chat completion through the proxy: (text, input tokens, output tokens).
+
+    Raise TransientLLMError for rate limits, timeouts, and connection failures,
+    and PermanentLLMError, with the proxy's message, for everything else.
+    """
+    import httpx
+
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if temperature is not None:
+        body["temperature"] = temperature
+    try:
+        r = client.post("/v1/chat/completions", json=body)
+    except httpx.TransportError as e:
+        raise TransientLLMError(type(e).__name__) from e
+    if r.status_code >= 400:
+        try:
+            msg = r.json()["error"]["message"]
+        except Exception:
+            msg = r.text[:500]
+        err = (
+            TransientLLMError
+            if r.status_code in TRANSIENT_STATUS
+            else PermanentLLMError
+        )
+        raise err(f"HTTP {r.status_code}: {msg}")
+    resp = r.json()
+    usage = resp.get("usage") or {}
+    return (
+        resp["choices"][0]["message"].get("content") or "",
+        usage.get("prompt_tokens", 0),
+        usage.get("completion_tokens", 0),
+    )
 
 
 class BedrockLLM:
-    """Send model requests through Amazon Bedrock's Converse API.
+    """Send model requests to Bedrock through the course LLM proxy.
 
-    Disable botocore retries so the tracing client records and counts every
+    The proxy holds the AWS credentials, so all you need is your key. There are
+    no client-side retries, so the tracing client records and counts every
     attempt. Send temperature only when it is explicitly configured, since
     support for that parameter varies by model.
     """
@@ -296,7 +356,6 @@ class BedrockLLM:
     def __init__(
         self,
         model_id: str | None = None,
-        region: str | None = None,
         *,
         temperature: float | None = None,
         client=None,
@@ -304,83 +363,47 @@ class BedrockLLM:
         self.model_id = model_id or os.environ.get("AGENTKV_BEDROCK_MODEL", "")
         if not self.model_id:
             raise ValueError(
-                "set AGENTKV_BEDROCK_MODEL to a Bedrock model id or inference profile"
+                "set AGENTKV_BEDROCK_MODEL to a model id from Model access in README.md"
             )
         self.name = self.model_id
         self.temperature = temperature
-        if client is None:
-            import boto3
-            from botocore.config import Config
-
-            region = (
-                region
-                or os.environ.get("AWS_REGION")
-                or os.environ.get("AWS_DEFAULT_REGION")
-                or "us-west-2"
-            )
-            client = boto3.client(
-                "bedrock-runtime",
-                region_name=region,
-                config=Config(
-                    retries={"max_attempts": 1, "mode": "standard"}, read_timeout=120
-                ),
-            )
-        self.client = client
+        self.client = client if client is not None else proxy_client()
 
     @staticmethod
-    def to_converse(messages: list[Msg]) -> tuple[list[dict], list[dict]]:
-        """Convert the prompt to Bedrock's system and conversation fields.
+    def to_chat(messages: list[Msg]) -> list[dict]:
+        """Convert the prompt to chat-completions messages.
 
-        Merge consecutive messages with the same role into one message containing
-        multiple content blocks, so the conversation alternates between roles.
+        System text goes first as one system message. Merge consecutive messages
+        with the same role into one message containing multiple text parts, so the
+        conversation alternates between roles.
         """
-        system = [{"text": m.text} for m in messages if m.role == "system"]
-        convo: list[dict] = []
+        system = [
+            {"type": "text", "text": m.text} for m in messages if m.role == "system"
+        ]
+        convo: list[dict] = [{"role": "system", "content": system}] if system else []
         for m in messages:
             if m.role == "system":
                 continue
             if convo and convo[-1]["role"] == m.role:
-                convo[-1]["content"].append({"text": m.text})
+                convo[-1]["content"].append({"type": "text", "text": m.text})
             else:
-                convo.append({"role": m.role, "content": [{"text": m.text}]})
-        return system, convo
+                convo.append(
+                    {"role": m.role, "content": [{"type": "text", "text": m.text}]}
+                )
+        return convo
 
     async def complete(
         self, messages: list[Msg], *, max_tokens: int, stage: str
     ) -> LLMResponse:
-        from botocore.exceptions import (
-            ClientError,
-            ConnectionError as BotoConnectionError,
-            ReadTimeoutError,
-        )
-
-        system, convo = self.to_converse(messages)
-        config = {"maxTokens": max_tokens}
-        if self.temperature is not None:
-            config["temperature"] = self.temperature
-        try:
-            resp = await asyncio.to_thread(
-                self.client.converse,
-                modelId=self.model_id,
-                messages=convo,
-                system=system,
-                inferenceConfig=config,
-            )
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            if code in THROTTLE_CODES:
-                raise TransientLLMError(code) from e
-            raise PermanentLLMError(f"{code}: {e}") from e
-        except (BotoConnectionError, ReadTimeoutError) as e:
-            raise TransientLLMError(type(e).__name__) from e
-        text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
-        usage = resp.get("usage", {})
-        return LLMResponse(
-            text,
-            usage.get("inputTokens", 0),
-            usage.get("outputTokens", 0),
+        text, input_tokens, output_tokens = await asyncio.to_thread(
+            chat,
+            self.client,
             self.model_id,
+            self.to_chat(messages),
+            max_tokens=max_tokens,
+            temperature=self.temperature,
         )
+        return LLMResponse(text, input_tokens, output_tokens, self.model_id)
 
 
 def make_llm(backend: str, **kw) -> LLM:

@@ -58,7 +58,30 @@ Launch Jupyter (`jupyter lab`), open the notebooks, and select the **CS 378 Assi
 
 ### Model access
 
-We will update this section with details of Bedrock LLM API access.
+Part 1 runs offline and needs no key. Part 3 calls models on Amazon Bedrock through the course LLM proxy. Each student gets a key; your team's keys share one budget, and requests are refused once it is spent. Save your key:
+
+```bash
+(umask 077; echo 'sk-...' > ~/.agentkv_llm_key)
+```
+
+Never put your key in a notebook or a committed file.
+
+| Model | Id | $ per 1M input / output tokens |
+|---|---|---|
+| Claude Haiku 5.5 | `global.anthropic.claude-haiku-5-5` | 0.10 / 0.50 |
+| Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | 2 / 10 |
+| Claude Opus 5.5 | `global.anthropic.claude-opus-5-5` | 4 / 20 |
+| GPT-6.1 Terra | `global.openai.gpt-6.1-terra` | 1 / 5 |
+| GPT-6.1 Sol | `global.openai.gpt-6.1-sol` | 2 / 10 |
+| GPT-6 Luna | `global.openai.gpt-6-luna` | 0.10 / 0.50 |
+
+`examples/research_system.py` uses Sonnet 5.5; set `AGENTKV_RESEARCH_MODEL` to another id to change it. Frameworks that take an OpenAI-compatible endpoint use base URL `https://llm.utcs378-infra.duckdns.org/v1` and your key as the API key, for example `OPENAI_API_KEY=$(cat ~/.agentkv_llm_key) python ...`.
+
+Check your usage:
+
+```bash
+curl -s https://llm.utcs378-infra.duckdns.org/key/info -H "Authorization: Bearer $(cat ~/.agentkv_llm_key)" | python3 -c 'import json,sys; print("Usage: $%.2f / $50" % json.load(sys.stdin)["info"]["spend"])'
+```
 
 ## Part 1: Run and analyze a deep research agent
 
@@ -184,7 +207,7 @@ python -m research_app.run --cap 8 --replay --out runs/c8
 python -m research_app.run --cap 8 --failure-rate 0.2 --replay --out runs/c8-faults
 ```
 
-- **LLM backend:** By default, these commands use the deterministic offline `FakeLLM`, which is sufficient for Part 1. To use Bedrock instead, set `AGENTKV_BEDROCK_MODEL` and pass `--backend bedrock`. Use the same backend for all three runs and state which one you used in your report.
+- **LLM backend:** By default, these commands use the deterministic offline `FakeLLM`, which is sufficient for Part 1. To use Bedrock instead, save your key as in [Model access](#model-access), set `AGENTKV_BEDROCK_MODEL`, and pass `--backend bedrock`. Use the same backend for all three runs and state which one you used in your report.
 - **Fault injection:** `--failure-rate 0.2` causes each search or fetch tool attempt to fail transiently with 20% probability.
 - **Outputs:** Every run must finish with `16/16 valid`. Each run directory saves `trace.jsonl`, `reports.json`, `summary.json`, and `replay.json` (a simulator-compatible trace of the run). Because Bedrock does not expose internal KV-cache state, `block_hashes` are always computed locally over 256-token prompt blocks to measure potential prefix reuse.
 

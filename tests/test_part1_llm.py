@@ -1,68 +1,76 @@
-"""Part 1: LLM backends, offline. No test here calls Bedrock."""
+"""Part 1: LLM backends, offline. No test here calls Bedrock or the course proxy."""
 
 import asyncio
 import json
 
+import httpx
 import pytest
 
-from research_app import prompts
+from research_app import llm, prompts
 from research_app.corpus import Corpus
 from research_app.llm import BedrockLLM, FakeLLM, PermanentLLMError, TransientLLMError
 from research_app.prompts import Msg
 
 
-class StubBedrock:
-    def __init__(self, error=None):
-        self.error = error
+class StubProxy:
+    """Stands in for the course LLM proxy's /v1/chat/completions."""
+
+    def __init__(self, status=200, error=None):
+        self.status, self.error = status, error
         self.calls = []
 
-    def converse(self, **kw):
-        self.calls.append(kw)
+    def handler(self, request):
+        self.calls.append(json.loads(request.content))
         if self.error:
             raise self.error
-        return {
-            "output": {"message": {"content": [{"text": '{"subtopics": []}'}]}},
-            "usage": {"inputTokens": 11, "outputTokens": 3},
-        }
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": {"message": "stub"}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"subtopics": []}'}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+            },
+        )
 
-
-def client_error(code):
-    from botocore.exceptions import ClientError
-
-    return ClientError({"Error": {"Code": code, "Message": code}}, "Converse")
+    def client(self):
+        return httpx.Client(
+            base_url="http://proxy.test", transport=httpx.MockTransport(self.handler)
+        )
 
 
 def test_bedrock_merges_roles_and_reports_usage():
-    stub = StubBedrock()
-    llm = BedrockLLM("test-model", client=stub)
+    stub = StubProxy()
+    llm = BedrockLLM("test-model", client=stub.client())
     msgs = prompts.extract_messages(
         "Q?", prompts.Subtopic("f1", "t", "q"), [Corpus().doc("raft")]
     )
     resp = asyncio.run(llm.complete(msgs, max_tokens=50, stage="extract"))
     (call,) = stub.calls
-    assert call["modelId"] == "test-model" and call["system"] == [
-        {"text": prompts.SYSTEM_PROMPT}
-    ]
-    assert [m["role"] for m in call["messages"]] == [
-        "user"
-    ]  # consecutive user turns merged
-    assert len(call["messages"][0]["content"]) == len(msgs) - 1
-    assert call["inferenceConfig"] == {"maxTokens": 50}  # no temperature unless asked
+    assert call["model"] == "test-model"
+    system, *convo = call["messages"]
+    assert system == {
+        "role": "system",
+        "content": [{"type": "text", "text": prompts.SYSTEM_PROMPT}],
+    }
+    assert [m["role"] for m in convo] == ["user"]  # consecutive user turns merged
+    assert len(convo[0]["content"]) == len(msgs) - 1
+    assert call["max_tokens"] == 50 and "temperature" not in call  # only when asked
     assert (resp.input_tokens, resp.output_tokens) == (11, 3)
 
 
 def test_bedrock_sends_temperature_only_when_given():
-    stub = StubBedrock()
+    stub = StubProxy()
     asyncio.run(
-        BedrockLLM("m", client=stub, temperature=0.2).complete(
+        BedrockLLM("m", client=stub.client(), temperature=0.2).complete(
             [Msg("user", "hi")], max_tokens=5, stage="plan"
         )
     )
-    assert stub.calls[0]["inferenceConfig"] == {"maxTokens": 5, "temperature": 0.2}
+    assert stub.calls[0]["max_tokens"] == 5 and stub.calls[0]["temperature"] == 0.2
 
 
 def test_bedrock_alternates_with_assistant_history():
-    system, convo = BedrockLLM.to_converse(
+    convo = BedrockLLM.to_chat(
         [
             Msg("system", "s"),
             Msg("user", "a"),
@@ -71,21 +79,30 @@ def test_bedrock_alternates_with_assistant_history():
             Msg("user", "d"),
         ]
     )
-    assert [m["role"] for m in convo] == ["user", "assistant", "user"]
+    assert [m["role"] for m in convo] == ["system", "user", "assistant", "user"]
 
 
 @pytest.mark.parametrize(
-    "code,exc",
+    "stub,exc",
     [
-        ("ThrottlingException", TransientLLMError),
-        ("ServiceUnavailableException", TransientLLMError),
-        ("ValidationException", PermanentLLMError),
+        (StubProxy(status=429), TransientLLMError),  # rate limited
+        (StubProxy(status=503), TransientLLMError),
+        (StubProxy(error=httpx.ReadTimeout("slow")), TransientLLMError),
+        (StubProxy(status=422), PermanentLLMError),  # group budget spent
+        (StubProxy(status=401), PermanentLLMError),  # bad key
     ],
 )
-def test_bedrock_error_mapping(code, exc):
-    llm = BedrockLLM("m", client=StubBedrock(error=client_error(code)))
+def test_bedrock_error_mapping(stub, exc):
+    llm = BedrockLLM("m", client=stub.client())
     with pytest.raises(exc):
         asyncio.run(llm.complete([Msg("user", "x")], max_tokens=5, stage="plan"))
+
+
+def test_proxy_client_needs_a_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGENTKV_LLM_KEY", raising=False)
+    monkeypatch.setattr(llm, "KEY_FILE", tmp_path / "missing")
+    with pytest.raises(ValueError, match="no LLM key"):
+        llm.proxy_client()
 
 
 def test_fake_llm_is_deterministic_and_quotes_verbatim():

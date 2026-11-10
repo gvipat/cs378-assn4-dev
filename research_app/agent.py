@@ -60,7 +60,7 @@ class AgentSettings:
     search_k: int = 5
     max_fetch: int = 3
     plan_tokens: int = 400
-    extract_tokens: int = 700
+    extract_tokens: int = 1500
     synthesize_tokens: int = 1200
     branch_timeout: float | None = None  # seconds per branch; None disables the timeout
 

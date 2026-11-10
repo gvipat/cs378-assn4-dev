@@ -1,7 +1,7 @@
 """A starter agentic research system that generates policies, evaluates them, and
 retains the best candidate. See Part 3 in README.md.
 
-    export AGENTKV_RESEARCH_MODEL=<the course's approved Bedrock model id>
+    export AGENTKV_RESEARCH_MODEL=global.anthropic.claude-sonnet-5-5   # or another id from README.md
     python examples/research_system.py --iters 10
 
     python examples/research_system.py --iters 3 --offline     # check execution without model calls
@@ -21,42 +21,46 @@ import argparse, hashlib, json, math, os, pathlib, random, re, runpy, time
 
 from agentkv import score
 
+RESEARCH_MODEL = "global.anthropic.claude-sonnet-5-5"
+
 
 def bedrock_client():
-    import boto3
-    from botocore.config import Config
+    from research_app.llm import proxy_client
 
-    # Long replies can take minutes; adaptive retries absorb throttling.
-    return boto3.client(
-        "bedrock-runtime",
-        config=Config(
-            read_timeout=900, retries={"max_attempts": 8, "mode": "adaptive"}
-        ),
-    )
+    # Long replies can take minutes.
+    return proxy_client(timeout=900)
 
 
-def ask(bedrock, model, prompt):
-    """Return (reply text, usage). A failed request returns an empty reply and records the error."""
-    try:
-        r = bedrock.converse(
-            modelId=model,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 32000},
-        )
-    except Exception as e:
-        return "", {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "model": model,
-            "error": f"{type(e).__name__}: {e}",
-        }
-    usage = r["usage"]
-    text = "".join(b.get("text", "") for b in r["output"]["message"]["content"])
+def ask(bedrock, model, prompt, attempts=8):
+    """Return (reply text, usage). A failed request returns an empty reply and records the error.
+
+    Rate limits and timeouts are retried with exponential backoff, up to `attempts` tries.
+    """
+    from research_app.llm import TransientLLMError, chat
+
+    for attempt in range(attempts):
+        try:
+            text, input_tokens, output_tokens = chat(
+                bedrock,
+                model,
+                [{"role": "user", "content": prompt}],
+                max_tokens=32000,
+            )
+            break
+        except Exception as e:
+            if isinstance(e, TransientLLMError) and attempt < attempts - 1:
+                time.sleep(min(60, 2**attempt))
+                continue
+            return "", {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "model": model,
+                "error": f"{type(e).__name__}: {e}",
+            }
     return text, {
-        "input_tokens": usage["inputTokens"],
-        "output_tokens": usage["outputTokens"],
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "model": model,
-        "request_id": r.get("ResponseMetadata", {}).get("RequestId"),
     }
 
 
@@ -155,7 +159,7 @@ def main():  # score() runs traces in a process pool, so everything lives under 
 
     rng, bedrock, model = random.Random(0), None, None
     if not args.offline:
-        model = os.environ["AGENTKV_RESEARCH_MODEL"]
+        model = os.environ.get("AGENTKV_RESEARCH_MODEL", RESEARCH_MODEL)
         bedrock = bedrock_client()
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=False)  # do not mix two campaigns' records
