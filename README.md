@@ -136,32 +136,31 @@ Next, implement the four workload analysis functions in `research_app/analysis.p
 
 A recorded trace is loaded via `run = load_run("runs/c2")`. Each recorded operation is represented by an `Op` object containing its dependencies (`deps`), timestamps (`start`, `end`, `slot_requested`, `slot_acquired`), token counts (`prompt_tokens`, `output_tokens`), and 256-token prefix `block_hashes`.
 
-- `critical_path(run, report) -> list[Step]`  
-Finds the chain of operations that determined when `report` finished, returned in chronological order from first to last.
+- **`critical_path(run, report) -> list[Step]`**  
+  Finds the chain of operations that determined when `report` finished, returned in chronological order from first to last.
   - **Backward walk:** Start at the operation in `report` with the latest `end` time (breaking ties by larger `op_id`). Repeatedly step to whichever of its dependencies in `run.ops` finished last (using the same tie-breaker), ignoring any dependency IDs not present in `run.ops`, until you reach an operation with no dependencies in the run. Raise `KeyError` if the report has no operations.
   - **Latency breakdown:** Convert each operation on the path into a `Step(op_id, kind, stage, gap, wait, service)`, where:
     - `gap` is the time between the blocking dependency's `end` (or the report's arrival time `run.arrivals[report]` for the first step) and this operation's `start`;
     - `wait` is the time spent waiting for an LLM concurrency slot (`op.slot_wait`, which is `0.0` for tools);
     - `service` is the remaining duration of the operation (`op.end - op.start - wait`), including any retries.  
     Across the returned steps, the sum of `gap + wait + service` equals the report's end-to-end latency.
-- `prefix_hit_rate(calls, block_size=256) -> float`  
-Computes the fraction of all prompt tokens across `calls` (passed in start order via `run.llm_calls()`) that would hit in an unbounded prefix cache.
+- **`prefix_hit_rate(calls, block_size=256) -> float`**  
+  Computes the fraction of all prompt tokens across `calls` (passed in start order via `run.llm_calls()`) that would hit in an unbounded prefix cache.
   - A full 256-token block in a call's `block_hashes` counts as a cache hit (contributing `block_size` shared tokens) if its hash appeared in an earlier call in `calls`.
   - Check a call's blocks against the history of previously seen hashes *before* adding that call's hashes to the history.
   - Divide the total shared tokens by the sum of `prompt_tokens` across all calls (which includes trailing partial blocks). Return `0.0` if total `prompt_tokens` is zero.
-- `reuse_intervals(calls) -> list[Reuse]`  
-Measures, for each reuse of a prefix block, how long that block would have sat unreferenced between the end of the last earlier call holding it and the start of the reusing call (or `0.0` if an earlier holder is still running).
+- **`reuse_intervals(calls) -> list[Reuse]`**  
+  Measures, for each reuse of a prefix block, how long that block would have sat unreferenced between the end of the last earlier call holding it and the start of the reusing call (or `0.0` if an earlier holder is still running).
   - Process `calls` in start order, treating each call as holding its blocks from `call.start` to `call.end`.
   - Whenever a block hash in `call.block_hashes` was already seen in at least one earlier call, emit one `Reuse(block, stage, source, interval)` (at most once per distinct block in the current call):
     - `stage` is the current (reusing) call's stage;
     - `source` is the stage of the earlier holder with the latest `end` time;
     - `interval` is `call.start` minus that latest `end` time, or `0.0` if an earlier holder is still running at `call.start`.
-- `kv_footprint(calls, bytes_per_token=..., block_size=256) -> list[Footprint]`  
-Computes the time series of KV-cache memory held by active LLM calls, comparing private storage against shared-prefix storage.
+- **`kv_footprint(calls, bytes_per_token=..., block_size=256) -> list[Footprint]`**  
+  Computes the time series of KV-cache memory held by active LLM calls, comparing private storage against shared-prefix storage.
   - An LLM call occupies KV memory during `[slot_acquired, end)`, holding `prompt_tokens + output_tokens` tokens (at 128 KiB per token by default for Llama-3-8B in bf16).
   - Evaluate the footprint at every distinct `slot_acquired` and `end` timestamp across `calls` in ascending order. At timestamp `t`, a call is active if `slot_acquired <= t < end`.
   - At each timestamp `t`, record a `Footprint(t, calls, private, shared)`:
-    - `calls`: the number of active LLM calls at `t`.
     - `calls`: the number of active LLM calls holding a slot at time `t`.
     - `private`: total KV bytes if every active call stores all of its `prompt_tokens + output_tokens` independently.
     - `shared`: total KV bytes if identical full prefix blocks (`block_hashes`) are stored only once across all active calls, while each call's remaining tokens (its trailing partial prompt block plus `output_tokens`) are stored separately.
@@ -232,9 +231,9 @@ After finishing the required tasks, you can use Section 6 of the notebook to run
 
 An inference engine can retain a finished call's KV-cache blocks in GPU memory so that later calls sharing the same prompt prefix can skip prefill computation. However, cached blocks consume memory that active calls also need. In this part, you will implement and evaluate three core mechanisms in the simulated serving engine:
 
-1. **LRU eviction (**`policies/reference.py`**):** The baseline eviction policy that serves as the reference for Part 3.
-2. **Prefix-aware eviction (**`policies/prefix_policy.py`**):** A tree-aware eviction policy that evicts leaves first so shared prefix chains remain usable.
-3. **Cache-aware routing (**`policies/prefix_policy.py`**):** A two-replica router that balances prefix-cache affinity against queue load across GPUs.
+1. **LRU eviction (`policies/reference.py`):** The baseline eviction policy that serves as the reference for Part 3.
+2. **Prefix-aware eviction (`policies/prefix_policy.py`):** A tree-aware eviction policy that evicts leaves first so shared prefix chains remain usable.
+3. **Cache-aware routing (`policies/prefix_policy.py`):** A two-replica router that balances prefix-cache affinity against queue load across GPUs.
 
 
 
@@ -278,13 +277,13 @@ A policy is defined as a `Policy` subclass in a single Python file. Two hooks (`
 | `choose_preempted(view, running, state)` | one running call id to preempt (releasing its blocks) when memory runs out              | `running[-1]`            |
 
 
-- `view` **(**`agentkv.policy.View`**):** A read-only snapshot of the engine passed to decision hooks. It exposes:
+- **`view` (`agentkv.policy.View`):** A read-only snapshot of the engine passed to decision hooks. It exposes:
   - Total and per-replica memory and queue counts (`view.replicas`);
   - Ready calls (`view.ready`) and in-flight calls (`view.calls`), each with its job id, stage, prompt length, and `block_hashes`;
   - Resident prefix blocks (`view.blocks`), each with its `block_hash`, `parent_hash`, `replica`, and `ref_cnt`;
   - Active jobs (`view.jobs`);
   - `view.num_cached_blocks(call, r)`, which counts how many leading full blocks of `call`'s prompt are currently resident on replica `r`.
-- `state` **(**`agentkv.policy.State`**):** A mutable dictionary persisted across hook calls within a single trace (reset between traces). Use `state.rng` as your only source of randomness. Block, call, and job IDs are opaque and vary across traces.
+- **`state` (`agentkv.policy.State`):** A mutable dictionary persisted across hook calls within a single trace (reset between traces). Use `state.rng` as your only source of randomness. Block, call, and job IDs are opaque and vary across traces.
 - **Multi-replica state:** A single policy instance and `state` dict are shared across all replicas. Engine-level hooks (`choose_victim`, `admission_order`, `batch_token_budget`, `choose_preempted`) set `view.replica` to identify which replica is requesting a decision.
 - **Sandbox limits:** Policies execute in a restricted sandbox with a 50 ms CPU limit per hook call and a 4 MiB serialization limit on `state` plus policy attributes (see [Policy rules](#policy-rules)).
 
@@ -301,12 +300,12 @@ By default, `score()` simulates **two replicas** (pass `replicas=1` for single-r
 
 Complete `__init__`, `on_event`, and `choose_victim` in `policies/reference.py` (`target_concurrency` is already implemented and returns `self.cap`, which defaults to 8):
 
-- **Tracking recency (**`on_event`**):** Maintain the recency order of resident blocks across events:
+- **Tracking recency (`on_event`):** Maintain the recency order of resident blocks across events:
   - `alloc` and `hit` events mark `event.block` as the most recently used block.
   - `release` events do *not* count as accesses and must not update recency.
   - `evict` events remove `event.block` from your tracking state.
   - Because multiple events from the same GPU batch can share a timestamp `event.t`, track recency strictly by **event delivery order** rather than by timestamp.
-- **Selecting a victim (**`choose_victim`**):** Return the least recently used block ID among `candidates`. Note that your recency structure may also contain currently active blocks (`ref_cnt > 0`), so only consider block IDs present in `candidates` (and do not rely on `candidates[0]`, which is ordered by release time rather than last access).
+- **Selecting a victim (`choose_victim`):** Return the least recently used block ID among `candidates`. Note that your recency structure may also contain currently active blocks (`ref_cnt > 0`), so only consider block IDs present in `candidates` (and do not rely on `candidates[0]`, which is ordered by release time rather than last access).
 
 Run the LRU unit tests and the reference verification test:
 
@@ -324,10 +323,10 @@ When a call runs, it accesses its prompt blocks sequentially from root to tail. 
 
 Complete `__init__`, `on_event`, and `choose_victim` in `policies/prefix_policy.py` to implement leaf-first LRU eviction:
 
-- **Eviction rule (**`choose_victim`**):** When `self.leaf_first` is `True` (the default), return the least recently used block in `candidates` that is currently a **leaf** of its replica's prefix tree; if no candidate is a leaf, fall back to the least recently used candidate overall. When `self.leaf_first` is `False`, behave identically to plain LRU.
+- **Eviction rule (`choose_victim`):** When `self.leaf_first` is `True` (the default), return the least recently used block in `candidates` that is currently a **leaf** of its replica's prefix tree; if no candidate is a leaf, fall back to the least recently used candidate overall. When `self.leaf_first` is `False`, behave identically to plain LRU.
 - **Definition of a leaf:** A candidate block is a leaf if no currently resident block on the same replica has a `parent_hash` equal to the candidate's `block_hash`. Once all of a block's resident children on that replica have been evicted, the block itself becomes a leaf.
-- **Block IDs and hashes:** `event.block` identifies one resident copy. A child's `parent_hash` refers to its parent's `block_hash`, not its residence ID. Copies of the same prefix on different replicas share a hash but have different residence IDs.
-- **Maintaining prefix trees from events (**`on_event`**):** Build and update the prefix tree structure using `on_event` rather than reading `view.blocks` (the unit tests invoke `choose_victim` with `view=None`):
+- **Block IDs vs. prefix hashes:** `event.block` is the residence ID of one physical copy on a replica, whereas `event.block_hash` identifies the prefix content. Critically, a child block's `parent_hash` matches its parent's `block_hash` (not its residence ID `event.block`), and identical prefix blocks cached on different replicas share the same `block_hash` while having distinct residence IDs.
+- **Maintaining prefix trees from events (`on_event`):** Build and update the prefix tree structure using `on_event` rather than reading `view.blocks` (the unit tests invoke `choose_victim` with `view=None`):
   - On `alloc`, record the block's `block_hash`, `parent_hash` (`None` for the first block of a prompt), and `replica`, in addition to updating its recency.
   - On `hit`, update the block's recency.
   - On `evict` (which carries only `event.block`), remove the block from both your recency state and its replica's prefix tree.
@@ -338,15 +337,13 @@ Leave `route_call` for Section 2.3 (for the 2.2 experiments, pass `balance_thres
 pytest tests/test_part2_prefix.py -k "not route"
 ```
 
-
-
 ### 2.3 Cache-aware routing
 
 With two GPU replicas, a prefix cached on replica 0 does not benefit a call dispatched to replica 1. Following SGLang's cache-aware router, implement `PrefixPolicy.route_call` in `policies/prefix_policy.py`:
 
 - **Eligible replicas:** Find the minimum `in_flight` count across all replicas (`view.replicas[r].in_flight`). A replica `r` is eligible if its `in_flight` count is at most `self.balance_threshold` above that minimum.
 - **Replica selection:** Among eligible replicas, choose the replica with the largest number of cached prompt blocks for `call` (`view.num_cached_blocks(call, r)`), breaking ties by lower `in_flight` count and then by lower replica ID `r`.
-- **Fallback (**`balance_threshold == -1`**):** When `balance_threshold == -1` (already handled by the supplied `if` check), route to the least-loaded replica just like the reference policy.
+- **Fallback (`balance_threshold == -1`):** When `balance_threshold == -1` (already handled by the supplied `if` check), route to the least-loaded replica just like the reference policy.
 
 With `leaf_first=False` and `balance_threshold=-1`, `PrefixPolicy` makes the exact same decisions as `ReferencePolicy`. Run the full Part 2 prefix test suite:
 
@@ -388,7 +385,7 @@ If you want to test custom policy variants, save them as copies under `candidate
 
 ### Optional: job-first dispatch
 
-Section 7 of the Part 2 notebook explores `dispatch_order`. This section is ungraded and requires no submission.
+Section 7 of `notebooks/part2_lru_policy.ipynb` explores `dispatch_order` (prioritizing ready calls from older jobs). This section is ungraded and requires no submission.
 
 ## Part 3: Agent-driven policy research
 
@@ -400,16 +397,14 @@ In this final part, you will build an automated research system in which LLM age
 
 ### What to build
 
-You should create your own `research/` directory and place your Part 3 code there. There is no starter code for this part.
+All policies in Part 3 are evaluated on **two replicas** (each with its own queue and KV cache) and scored relative to `policies/reference.py` (LRU eviction at `cap = 8` with least-loaded routing; see [The policy API](#the-policy-api)). Create a new `research/` directory for your Part 3 code (`examples/` provides reference templates to copy or adapt):
 
-All policies in Part 3 are evaluated on **two replicas** (each with its own queue and KV cache) and scored relative to `policies/reference.py` (LRU eviction at `cap = 8` with least-loaded routing; see [The policy API](#the-policy-api)).
-
-1. **Build your research loop in** `research/`**:**
-  `examples/research_system.py` provides a minimal greedy baseline: it prompts an LLM with the policy API and current best policy, extracts one candidate Python file, evaluates it, and keeps it if it improves the objective. You may extend this script or adapt an existing evolutionary/agentic code-search framework (such as OpenEvolve, ShinkaEvolve, or CORAL—if you use one, record its git commit and license in `campaign.json`).
-2. **Define your evaluator in** `research/evaluator.py`**:**
-  Copy `examples/evaluator.py` to `research/evaluator.py` and customize:
-  - the scalar `objective` your search maximizes (must be `None` for invalid candidates, and a finite number for valid ones); and
-  - the diagnostic feedback returned to your agents.  
+1. **Build your research loop in `research/`:**  
+   `examples/research_system.py` provides a minimal greedy baseline: it prompts an LLM with the policy API and current best policy, extracts one candidate Python file, evaluates it, and keeps it if it improves the objective. You may extend this script or adapt an existing evolutionary/agentic code-search framework (such as OpenEvolve, ShinkaEvolve, or CORAL—if you use one, record its git commit and license in `campaign.json`).
+2. **Define your evaluator in `research/evaluator.py`:**  
+   Copy `examples/evaluator.py` to `research/evaluator.py` and customize:
+   - the scalar `objective` your search maximizes (must be `None` for invalid candidates, and a finite number for valid ones); and
+   - the diagnostic feedback returned to your agents.  
    The dictionary returned by `evaluate()` must preserve `valid`, `violations`, `speedup`, and `by_family`, in addition to `objective`.
 
 By default, `examples/research_system.py` starts from your completed `policies/reference.py` from Section 2.1 (to test the pipeline before finishing 2.1, pass `--start policies/fifo.py`). Verify your setup offline before spending LLM tokens:
@@ -420,16 +415,14 @@ cp examples/evaluator.py research/evaluator.py
 python examples/research_system.py --evaluator research/evaluator.py --iters 3 --offline
 ```
 
-
-
 ### Campaigns
 
 A **campaign** is a single unattended run of your research system stored in its own directory `runs/<campaign>/`.
 
-- **Seeds and configuration (**`campaign.json`**):** A campaign may start from any seed policy or pool of seeds (e.g., `policies/reference.py`, `policies/prefix_policy.py`, or custom policies you write yourself), and your prompts may encode domain ideas. Store all hand-written seed policies in `candidates/`. Before a campaign starts, record its seeds, model ID, prompts, and token budget in `runs/<campaign>/campaign.json`.
-- **Candidate and call logs (**`log.jsonl`**,** `calls.jsonl`**):** Log every evaluated candidate—including invalid or failed ones—as one JSON line in `log.jsonl` containing `id`, `parent`, `hypothesis`, `file` (path to the saved candidate code), `objective`, `dev_S`, `by_family`, `tokens`, and `valid`. Record `calls.jsonl` with token usage per LLM call, and record `val_S` for any finalists in `log.jsonl` or `selection.json`.
-- **Final selection (**`selection.json`**):** Your submitted `policy.py` must be the exact candidate chosen in `selection.json` by one of your campaigns, with **no human intervention** between the start of that campaign and its final selection (a seed policy is allowed to win if no generated candidate beats it). Between separate campaigns, you are free to modify your system, prompts, evaluator, or seeds.
-- **Intervention log (**`interventions.jsonl`**):** Whenever a human stops, restarts, or modifies a campaign, record one JSON line in `interventions.jsonl`:
+- **Seeds and configuration (`campaign.json`):** A campaign may start from any seed policy or pool of seeds (e.g., `policies/reference.py`, `policies/prefix_policy.py`, or custom policies you write yourself), and your prompts may encode domain ideas. Store all hand-written seed policies in `candidates/`. Before a campaign starts, record its seeds, model ID, prompts, and token budget in `runs/<campaign>/campaign.json`.
+- **Candidate and call logs (`log.jsonl`, `calls.jsonl`):** Log every evaluated candidate—including invalid or failed ones—as one JSON line in `log.jsonl` containing `id`, `parent`, `hypothesis`, `file` (path to the saved candidate code), `objective`, `dev_S`, `by_family`, `tokens`, and `valid`. Record `calls.jsonl` with token usage per LLM call, and record `val_S` for any finalists in `log.jsonl` or `selection.json`.
+- **Final selection (`selection.json`):** Your submitted `policy.py` must be the exact candidate chosen in `selection.json` by one of your campaigns, with **no human intervention** between the start of that campaign and its final selection (a seed policy is allowed to win if no generated candidate beats it). Between separate campaigns, you are free to modify your system, prompts, evaluator, or seeds.
+- **Intervention log (`interventions.jsonl`):** Whenever a human stops, restarts, or modifies a campaign, record one JSON line in `interventions.jsonl`:
 
 ```json
 {
