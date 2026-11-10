@@ -58,7 +58,7 @@ Launch Jupyter (`jupyter lab`), open the notebooks, and select the **CS 378 Assi
 
 ### Model access
 
-Part 1 runs offline and needs no key. Part 3 calls models on Amazon Bedrock through the course LLM proxy. Each student gets a key; your team's keys share one budget, and requests are refused once it is spent. Save your key:
+Part 1 runs offline and needs no key. Part 3 calls models on Amazon Bedrock through the course LLM proxy. Each student gets a key; your team's keys share a $50 budget, and requests are refused once it is spent. Save your key:
 
 ```bash
 (umask 077; echo 'sk-...' > ~/.agentkv_llm_key)
