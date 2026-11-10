@@ -483,7 +483,7 @@ if __name__ == "__main__":
     print(r.summary(details=True))  # per-trace cache, preemption, and CPU statistics
 ```
 
-Run from the repository root; `candidates/c01.py` stands for one of your policy files. From the shell: `python -m agentkv.score --policy candidates/c01.py --split public_dev`.
+Run from the repository root; `candidates/c01.py` stands for one of your hand-written policy files; generated ones are under `runs/<campaign>/`. From the shell: `python -m agentkv.score --policy candidates/c01.py --split public_dev`.
 
 
 | Split        | Traces                             | Purpose                            |
